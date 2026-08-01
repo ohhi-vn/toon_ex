@@ -577,7 +577,8 @@ defmodule ToonEx.Shared.UtilsTest do
     end
 
     test "returns true for list with maps containing mixed primitive values" do
-      assert Utils.all_primitive_values?([%{"a" => 1, "b" => "x", "c" => true, "d" => nil}]) == true
+      assert Utils.all_primitive_values?([%{"a" => 1, "b" => "x", "c" => true, "d" => nil}]) ==
+               true
     end
 
     test "returns true for list with empty maps" do

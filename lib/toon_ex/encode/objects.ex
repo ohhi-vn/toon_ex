@@ -150,7 +150,7 @@ defmodule ToonEx.Encode.Objects do
         Enum.filter(ordered, &MapSet.member?(key_set, &1))
 
       :error ->
-        Map.keys(map) |> Enum.sort()
+        Map.keys(map)
     end
   end
 
@@ -161,16 +161,16 @@ defmodule ToonEx.Encode.Objects do
     key_set = MapSet.new(existing_keys)
     ordered_existing = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
-    if length(ordered_existing) == length(existing_keys) do
+    if length(ordered_existing) == map_size(map) do
       ordered_existing
     else
-      Enum.sort(existing_keys)
+      existing_keys
     end
   end
 
-  # Pattern 3: No key_order or not applicable - sort alphabetically
+  # Pattern 3: No key_order or not applicable - use map insertion order (Erlang 27+)
   defp get_ordered_keys(map, _key_order, _path) do
-    Map.keys(map) |> Enum.sort()
+    Map.keys(map)
   end
 
   @doc """

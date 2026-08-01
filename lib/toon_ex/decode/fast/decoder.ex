@@ -34,7 +34,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
               unescape_string: 1,
               trim_leading: 1,
               trim_trailing: 1,
-              count_leading_spaces: 2,
+              count_leading_spaces: 3,
               find_colon_space: 1,
               contains_byte: 2,
               ends_with_colon: 1,
@@ -47,18 +47,18 @@ defmodule ToonEx.Decode.Fast.Decoder do
               first_content_indent: 1,
               remove_list_marker: 1,
               strip_trailing_colon: 1,
-              is_whitespace_only: 1,
+              whitespace_only?: 1,
               has_bracket_colon_space: 1,
-              is_tabular_header: 1,
-              is_list_header: 1,
-              is_list_array_header: 1,
+              tabular_header?: 1,
+              list_header?: 1,
+              list_array_header?: 1,
               strip_dash_prefix: 1,
               do_strip_trailing_quote: 1,
               escape_char: 1,
               flush_unescape_chunk: 4,
               finalize_unescape: 4,
               has_array_marker: 1,
-              is_row_line: 2,
+              row_line?: 2,
               find_unquoted_byte: 2,
               find_uqb: 4,
               take_digits: 3,
@@ -109,17 +109,18 @@ defmodule ToonEx.Decode.Fast.Decoder do
     lines = preprocess(input)
 
     if opts.strict do
-      validate_no_tab_indent(input)
       validate_indentation(lines, opts)
     end
+
+    track? = opts.expand_paths == :safe
 
     {result, quoted_keys} =
       case lines do
         [] -> {%{}, []}
-        _ -> parse_root(lines, opts)
+        _ -> parse_root(lines, opts, track?)
       end
 
-    if opts.expand_paths == :safe do
+    if track? do
       # Pass {key_order, quoted_keys_set} so expand_paths can process keys
       # in document order for correct LWW resolution.
       quoted_keys_set =
@@ -167,23 +168,22 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp do_preprocess([], acc), do: :lists.reverse(acc)
 
   defp do_preprocess([line | rest], acc) do
-    {trimmed, indent} = count_leading_spaces(line, 0)
+    {trimmed, indent, has_tab} = count_leading_spaces(line, 0, false)
 
-    cond do
+    if comment_line?(trimmed) and not has_tab do
       # Comment line — skip entirely (first non-whitespace char is #)
-      is_comment_line(trimmed) ->
-        do_preprocess(rest, acc)
-
-      true ->
-        is_blank = trimmed == <<>> or is_whitespace_only(trimmed)
-        do_preprocess(rest, [{trimmed, indent, is_blank} | acc])
+      # But only if the leading whitespace contains no tabs (per spec §5.1)
+      do_preprocess(rest, acc)
+    else
+      is_blank = trimmed == <<>> or whitespace_only?(trimmed)
+      do_preprocess(rest, [{trimmed, indent, is_blank, has_tab} | acc])
     end
   end
 
   defp drop_trailing_blank(lines) do
     lines
     |> Enum.reverse()
-    |> Enum.drop_while(fn {_, _, is_blank} -> is_blank end)
+    |> Enum.drop_while(fn {_, _, is_blank, _} -> is_blank end)
     |> Enum.reverse()
   end
 
@@ -195,8 +195,13 @@ defmodule ToonEx.Decode.Fast.Decoder do
     indent_size = opts.indent_size
 
     :lists.foreach(
-      fn {_, indent, is_blank} ->
+      fn {_, indent, is_blank, has_tab} ->
         unless is_blank do
+          if has_tab do
+            raise DecodeError,
+              message: "Tab characters are not allowed in indentation (strict mode)"
+          end
+
           if indent > 0 and rem(indent, indent_size) != 0 do
             raise DecodeError,
               message: "Indentation must be a multiple of #{indent_size} spaces (strict mode)"
@@ -207,33 +212,9 @@ defmodule ToonEx.Decode.Fast.Decoder do
     )
   end
 
-  # Check for tab characters in indentation (strict mode per spec §12)
-  # Scans the original input once — only called when strict mode is enabled.
-  # Use Enum.each instead of :lists.foreach because private function captures
-  # (&has_tab_in_leading_whitespace?/1) cannot be invoked by Erlang BIFs.
-  defp validate_no_tab_indent(input) do
-    input
-    |> :binary.split("\n", [:global])
-    |> Enum.each(fn line ->
-      if has_tab_in_leading_whitespace?(line) do
-        raise DecodeError,
-          message: "Tab characters are not allowed in indentation (strict mode)"
-      end
-    end)
-  end
-
-  # Binary scan for tab in leading whitespace — O(1) for the common case (no tab)
-  @compile {:inline, has_tab_in_leading_whitespace?: 1}
-  defp has_tab_in_leading_whitespace?(<<?\t, _::binary>>), do: true
-
-  defp has_tab_in_leading_whitespace?(<<?\s, rest::binary>>),
-    do: has_tab_in_leading_whitespace?(rest)
-
-  defp has_tab_in_leading_whitespace?(_), do: false
-
   # ── Root Form Detection ─────────────────────────────────────────────────────
 
-  defp parse_root([{content, _, _} | _] = lines, opts) do
+  defp parse_root([{content, _, _, _} | _] = lines, opts, track?) do
     cond do
       # Root array: starts with [
       binary_part(content, 0, 1) == "[" ->
@@ -243,12 +224,12 @@ defmodule ToonEx.Decode.Fast.Decoder do
       # Per TOON spec §5: a single line that is neither a valid array header nor
       # a key-value line decodes to a single primitive.
       # Quoted strings like "a:b" are primitives even with colons inside.
-      length(lines) == 1 and is_root_primitive?(content) ->
+      length(lines) == 1 and root_primitive?(content) ->
         {parse_value(content), []}
 
       # Object (default)
       true ->
-        parse_object(lines, 0, opts, [], [], false)
+        parse_object(lines, 0, opts, [], [], false, track?)
     end
   end
 
@@ -257,17 +238,17 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # even if it contains colons (e.g., "a:b", "http://example.com").
   # A quoted key followed by ": " or ":" (e.g., "key": value) does NOT end
   # with a quote, so it correctly falls through to object parsing.
-  defp is_root_primitive?(<<"\"", _::binary>> = content) do
+  defp root_primitive?(<<"\"", _::binary>> = content) do
     :binary.last(content) == ?"
   end
 
-  defp is_root_primitive?(content) do
+  defp root_primitive?(content) do
     not contains_byte(content, ?:)
   end
 
   # ── Root Array Parsing ─────────────────────────────────────────────────────
 
-  defp parse_root_array([{content, _, _} | rest] = lines, opts) do
+  defp parse_root_array([{content, _, _, _} | rest] = lines, opts) do
     cond do
       # Bare empty array: []
       content == "[]" ->
@@ -275,7 +256,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         []
 
       # Root keyed tabular: [N:<delim?>]{fields}:
-      is_keyed_header(content) ->
+      keyed_header?(content) ->
         {count, delimiter, fields} = parse_root_keyed_header(content)
         child_indent = opts.indent_size
         {entry_rows, remaining} = take_entry_rows(rest, 0, child_indent, opts)
@@ -284,7 +265,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         parse_entry_into_object(entry_rows, fields, delimiter, opts)
 
       # Root tabular: [N]{fields}: (no closing bracket after digits)
-      is_tabular_header(content) ->
+      tabular_header?(content) ->
         {count, delimiter, fields} = parse_root_tabular_header(content)
         leaf_fc = leaf_count(fields)
         {rows, remaining} = take_tabular_rows(rest, 0, delimiter, leaf_fc, opts)
@@ -293,7 +274,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         parse_tabular_rows(rows, fields, leaf_fc, delimiter, opts, [])
 
       # Root list: [N]:
-      is_list_header(content) ->
+      list_header?(content) ->
         {count, delimiter} = parse_root_list_header(content)
         {items, remaining} = parse_list_array_items(rest, 0, delimiter, opts)
         validate_count(length(items), count, content, opts)
@@ -309,7 +290,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         values
 
       true ->
-        {result, _quoted_keys} = parse_object(lines, 0, opts, [], [], false)
+        {result, _quoted_keys} = parse_object(lines, 0, opts, [], [], false, false)
         result
     end
   end
@@ -331,41 +312,83 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # Returns the built map when lines are exhausted or depth decreases.
   # quoted_keys is a list of {key, was_quoted} tuples in reverse document order.
   # This preserves both key ordering (for LWW in path expansion) and quoted status.
-  defp parse_object([], _depth, opts, acc, quoted_keys, _in_list_item),
+  # When track? is false (expand_paths != :safe), quoted_keys is not built up.
+  defp parse_object([], _depth, opts, acc, quoted_keys, _in_list_item, _track?),
     do: {build_map(:lists.reverse(acc), opts), quoted_keys}
 
-  defp parse_object([{_, _, true} | rest], depth, opts, acc, quoted_keys, in_list_item) do
-    parse_object(rest, depth, opts, acc, quoted_keys, in_list_item)
+  defp parse_object([{_, _, true, _} | rest], depth, opts, acc, quoted_keys, in_list_item, track?) do
+    parse_object(rest, depth, opts, acc, quoted_keys, in_list_item, track?)
   end
 
-  defp parse_object([{_, indent, _} | _], depth, opts, acc, quoted_keys, _in_list_item) when indent < depth do
+  defp parse_object(
+         [{_, indent, _, _} | _],
+         depth,
+         opts,
+         acc,
+         quoted_keys,
+         _in_list_item,
+         _track?
+       )
+       when indent < depth do
     {build_map(:lists.reverse(acc), opts), quoted_keys}
   end
 
-  defp parse_object([{_, indent, _} | _], depth, opts, acc, quoted_keys, _in_list_item) when indent > depth do
+  defp parse_object(
+         [{_, indent, _, _} | _],
+         depth,
+         opts,
+         acc,
+         quoted_keys,
+         _in_list_item,
+         _track?
+       )
+       when indent > depth do
     # In strict mode, validate that over-indented lines only appear after a scope-opening line
     # (object header, array header, etc.)
     if opts.strict do
       raise DecodeError,
-        message: "Over-indented line: expected indent #{depth} or less, got #{indent} (previous line did not open a scope)",
+        message:
+          "Over-indented line: expected indent #{depth} or less, got #{indent} (previous line did not open a scope)",
         input: "line at indent #{indent}"
     end
+
     {build_map(:lists.reverse(acc), opts), quoted_keys}
   end
 
-  defp parse_object([{content, _indent, false} | rest], depth, opts, acc, quoted_keys, in_list_item) do
+  defp parse_object(
+         [{content, _indent, false, _} | rest],
+         depth,
+         opts,
+         acc,
+         quoted_keys,
+         in_list_item,
+         track?
+       ) do
     case parse_entry(content, rest, depth, opts, in_list_item) do
       {:kv, key, value, remaining, was_quoted} ->
-        qk = [{key, was_quoted} | quoted_keys]
-        parse_object(remaining, depth, opts, [{key, value} | acc], qk, in_list_item)
+        qk = if track?, do: [{key, was_quoted} | quoted_keys], else: quoted_keys
+        parse_object(remaining, depth, opts, [{key, value} | acc], qk, in_list_item, track?)
 
       {:nested, key, remaining, was_quoted} ->
-        qk = [{key, was_quoted} | quoted_keys]
-        {nested_value, remaining2, nested_qk} = parse_nested_object(remaining, depth, opts, in_list_item)
-        parse_object(remaining2, depth, opts, [{key, nested_value} | acc], nested_qk ++ qk, in_list_item)
+        qk = if track?, do: [{key, was_quoted} | quoted_keys], else: quoted_keys
+
+        {nested_value, remaining2, nested_qk} =
+          parse_nested_object(remaining, depth, opts, in_list_item, track?)
+
+        merged_qk = if track?, do: nested_qk ++ qk, else: quoted_keys
+
+        parse_object(
+          remaining2,
+          depth,
+          opts,
+          [{key, nested_value} | acc],
+          merged_qk,
+          in_list_item,
+          track?
+        )
 
       {:keyed, key, count, delimiter, fields, remaining, was_quoted} ->
-        qk = [{key, was_quoted} | quoted_keys]
+        qk = if track?, do: [{key, was_quoted} | quoted_keys], else: quoted_keys
         child_indent = depth + opts.indent_size
         {entry_rows, remaining2} = take_entry_rows(remaining, depth, child_indent, opts)
         entry_obj = parse_entry_into_object(entry_rows, fields, delimiter, opts)
@@ -377,34 +400,54 @@ defmodule ToonEx.Decode.Fast.Decoder do
             input: content
         end
 
-        parse_object(remaining2, depth, opts, [{key, entry_obj} | acc], qk, in_list_item)
+        parse_object(remaining2, depth, opts, [{key, entry_obj} | acc], qk, in_list_item, track?)
 
       {:tabular, key, count, delimiter, fields, remaining, was_quoted} ->
-        qk = [{key, was_quoted} | quoted_keys]
+        qk = if track?, do: [{key, was_quoted} | quoted_keys], else: quoted_keys
 
         {array_value, remaining2} =
           parse_tabular_array(remaining, depth, count, delimiter, fields, opts)
 
-        parse_object(remaining2, depth, opts, [{key, array_value} | acc], qk, in_list_item)
+        parse_object(
+          remaining2,
+          depth,
+          opts,
+          [{key, array_value} | acc],
+          qk,
+          in_list_item,
+          track?
+        )
 
       {:list, key, count, delimiter, remaining, was_quoted} ->
-        qk = [{key, was_quoted} | quoted_keys]
+        qk = if track?, do: [{key, was_quoted} | quoted_keys], else: quoted_keys
         {array_value, remaining2} = parse_list_array(remaining, depth, count, delimiter, opts)
-        parse_object(remaining2, depth, opts, [{key, array_value} | acc], qk, in_list_item)
+
+        parse_object(
+          remaining2,
+          depth,
+          opts,
+          [{key, array_value} | acc],
+          qk,
+          in_list_item,
+          track?
+        )
     end
   end
 
   # Build map from entry list – use BIF :maps.from_list/1 for speed
   defp build_map(entries, opts) do
-    if opts.strict do
+    map =
+      case opts.keys do
+        :strings -> :maps.from_list(entries)
+        :atoms -> Map.new(entries, fn {k, v} -> {String.to_atom(k), v} end)
+        :atoms! -> Map.new(entries, fn {k, v} -> {String.to_existing_atom(k), v} end)
+      end
+
+    if opts.strict and map_size(map) != length(entries) do
       check_duplicate_keys(entries)
     end
 
-    case opts.keys do
-      :strings -> :maps.from_list(entries)
-      :atoms -> Map.new(entries, fn {k, v} -> {String.to_atom(k), v} end)
-      :atoms! -> Map.new(entries, fn {k, v} -> {String.to_existing_atom(k), v} end)
-    end
+    map
   end
 
   # Check for duplicate keys in strict mode
@@ -479,14 +522,19 @@ defmodule ToonEx.Decode.Fast.Decoder do
                 # In strict mode, validate depth jump
                 # When inside a list item, double indentation is allowed
                 expected_ind = depth + opts.indent_size
+
                 if opts.strict and ind != expected_ind and
                      (not in_list_item or ind != depth + 2 * opts.indent_size) do
                   raise DecodeError,
-                    message: "Indentation jump: nested content must be indented by exactly #{opts.indent_size} spaces (got #{ind}, expected #{expected_ind})",
+                    message:
+                      "Indentation jump: nested content must be indented by exactly #{opts.indent_size} spaces (got #{ind}, expected #{expected_ind})",
                     input: content
                 end
+
                 {:nested, key, rest, was_quoted}
-              _ -> {:kv, key, %{}, rest, was_quoted}
+
+              _ ->
+                {:kv, key, %{}, rest, was_quoted}
             end
           else
             value = parse_value(trimmed_value)
@@ -538,21 +586,21 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp parse_entry_no_colon_space(content, rest, depth, opts) do
     cond do
       # Keyed tabular header: key[N:]{fields}:
-      is_keyed_header(content) ->
+      keyed_header?(content) ->
         {key, count, delimiter, fields} = parse_keyed_header_content(content)
         validate_fields_strict(fields, content, opts)
         was_quoted = key_was_quoted(content)
         {:keyed, key, count, delimiter, fields, rest, was_quoted}
 
       # Tabular header: key[N]{fields}:
-      is_tabular_header(content) ->
+      tabular_header?(content) ->
         {key, count, delimiter, fields} = parse_tabular_header_content(content)
         validate_fields_strict(fields, content, opts)
         was_quoted = key_was_quoted(content)
         {:tabular, key, count, delimiter, fields, rest, was_quoted}
 
       # List header: key[N]:
-      is_list_header(content) ->
+      list_header?(content) ->
         {key, count, delimiter} = parse_list_header_content(content)
         was_quoted = key_was_quoted(content)
         {:list, key, count, delimiter, rest, was_quoted}
@@ -649,7 +697,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   # ── Nested Object Parsing ───────────────────────────────────────────────────
 
-  defp parse_nested_object(lines, parent_depth, opts, in_list_item) do
+  defp parse_nested_object(lines, parent_depth, opts, in_list_item, track?) do
     {nested_lines, remaining} = take_nested(lines, parent_depth)
 
     if nested_lines == [] do
@@ -663,21 +711,26 @@ defmodule ToonEx.Decode.Fast.Decoder do
       # objects inside list items where the encoder uses double indentation).
       if opts.strict do
         depth_diff = child_depth - parent_depth
+
         if depth_diff <= 0 or rem(depth_diff, opts.indent_size) != 0 do
           raise DecodeError,
-            message: "Indentation jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{child_depth}, expected #{parent_depth + opts.indent_size})",
+            message:
+              "Indentation jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{child_depth}, expected #{parent_depth + opts.indent_size})",
             input: Enum.at(nested_lines, 0) |> elem(0)
         end
 
         # When not inside a list item, require single-level indentation
         if not in_list_item and child_depth != parent_depth + opts.indent_size do
           raise DecodeError,
-            message: "Indentation jump: nested content must be indented by exactly #{opts.indent_size} spaces (got #{child_depth}, expected #{parent_depth + opts.indent_size})",
+            message:
+              "Indentation jump: nested content must be indented by exactly #{opts.indent_size} spaces (got #{child_depth}, expected #{parent_depth + opts.indent_size})",
             input: Enum.at(nested_lines, 0) |> elem(0)
         end
       end
 
-      {result, quoted_keys} = parse_object(nested_lines, child_depth, opts, [], [], in_list_item)
+      {result, quoted_keys} =
+        parse_object(nested_lines, child_depth, opts, [], [], in_list_item, track?)
+
       # Return nested quoted_keys as-is (already in correct order within nested scope)
       {result, remaining, quoted_keys}
     end
@@ -705,7 +758,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp do_take_tabular_rows([], _base, _delim, _opts, acc), do: {:lists.reverse(acc), []}
 
-  defp do_take_tabular_rows([{_, _, true} = _line | rest], base, delim, opts, acc) do
+  defp do_take_tabular_rows([{_, _, true, _} = _line | rest], base, delim, opts, acc) do
     if opts.strict and acc != [] do
       raise DecodeError, message: "Blank lines are not allowed inside arrays in strict mode"
     else
@@ -713,9 +766,9 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp do_take_tabular_rows([{content, indent, false} = line | rest], base, delim, opts, acc)
+  defp do_take_tabular_rows([{content, indent, false, _} = line | rest], base, delim, opts, acc)
        when indent > base do
-    if is_row_line(content, delim) do
+    if row_line?(content, delim) do
       do_take_tabular_rows(rest, base, delim, opts, [line | acc])
     else
       {:lists.reverse(acc), [line | rest]}
@@ -727,7 +780,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # Parse tabular rows into list of maps
   defp parse_tabular_rows([], _fields, _fc, _delim, _opts, acc), do: :lists.reverse(acc)
 
-  defp parse_tabular_rows([{content, _, false} | rest], fields, fc, delim, opts, acc) do
+  defp parse_tabular_rows([{content, _, false, _} | rest], fields, fc, delim, opts, acc) do
     values = split_and_parse(content, delim)
 
     if length(values) != fc do
@@ -740,7 +793,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
     parse_tabular_rows(rest, fields, fc, delim, opts, [row_map | acc])
   end
 
-  defp parse_tabular_rows([{_, _, true} | rest], fields, fc, delim, opts, acc) do
+  defp parse_tabular_rows([{_, _, true, _} | rest], fields, fc, delim, opts, acc) do
     parse_tabular_rows(rest, fields, fc, delim, opts, acc)
   end
 
@@ -755,7 +808,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp do_take_entry_rows([], _base_depth, _child_indent, _opts, acc),
     do: {:lists.reverse(acc), []}
 
-  defp do_take_entry_rows([{_, _, true} = _line | rest], base_depth, child_indent, opts, acc) do
+  defp do_take_entry_rows([{_, _, true, _} = _line | rest], base_depth, child_indent, opts, acc) do
     # Allow blank lines before first entry (e.g., between header and first row)
     # Per spec §12: blank lines between header and rows are acceptable
     if opts.strict and acc != [] do
@@ -768,14 +821,16 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   defp do_take_entry_rows(
-         [{content, indent, false} | rest],
+         [{content, indent, false, _} | rest],
          base_depth,
          child_indent,
          opts,
          acc
        )
        when indent >= child_indent do
-    do_take_entry_rows(rest, base_depth, child_indent, opts, [{content, indent, false} | acc])
+    do_take_entry_rows(rest, base_depth, child_indent, opts, [
+      {content, indent, false, false} | acc
+    ])
   end
 
   defp do_take_entry_rows(lines, _base_depth, _child_indent, _opts, acc),
@@ -786,12 +841,13 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp parse_entry_into_object(entry_rows, fields, delimiter, opts) do
     leaf_fc = leaf_count(fields)
-    parse_entry_rows(entry_rows, fields, leaf_fc, delimiter, opts, %{})
+    parse_entry_rows(entry_rows, fields, leaf_fc, delimiter, opts, [])
   end
 
-  defp parse_entry_rows([], _fields, _fc, _delim, _opts, acc), do: acc
+  defp parse_entry_rows([], _fields, _fc, _delim, _opts, acc),
+    do: :maps.from_list(:lists.reverse(acc))
 
-  defp parse_entry_rows([{content, _, false} | rest], fields, fc, delim, opts, acc) do
+  defp parse_entry_rows([{content, _, false, _} | rest], fields, fc, delim, opts, acc) do
     case find_colon_space(content) do
       {:found, pos} ->
         key_part = binary_part(content, 0, pos)
@@ -805,14 +861,14 @@ defmodule ToonEx.Decode.Fast.Decoder do
             input: content
         end
 
-        if opts.strict and Map.has_key?(acc, entry_key) do
+        if opts.strict and List.keymember?(acc, entry_key, 0) do
           raise DecodeError,
             message: "Duplicate entry key in strict mode: #{inspect(entry_key)}",
             input: content
         end
 
         row_map = build_map_from_fields(fields, cell_values, opts)
-        parse_entry_rows(rest, fields, fc, delim, opts, Map.put(acc, entry_key, row_map))
+        parse_entry_rows(rest, fields, fc, delim, opts, [{entry_key, row_map} | acc])
 
       :not_found ->
         if opts.strict do
@@ -861,7 +917,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp parse_list_items([], _indent, _delim, _opts, acc), do: :lists.reverse(acc)
 
-  defp parse_list_items([{_, _, true} = _line | rest], indent, delim, opts, acc) do
+  defp parse_list_items([{_, _, true, _} = _line | rest], indent, delim, opts, acc) do
     # Allow blank lines before the first item (between header and first item)
     if opts.strict and acc != [] do
       raise DecodeError, message: "Blank lines are not allowed inside arrays in strict mode"
@@ -870,7 +926,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp parse_list_items([{content, line_indent, false} | rest], indent, delim, opts, acc) do
+  defp parse_list_items([{content, line_indent, false, _} | rest], indent, delim, opts, acc) do
     # In strict mode, lines at item depth must start with the list marker
     if opts.strict and not starts_with_list_marker(content) do
       raise DecodeError,
@@ -882,7 +938,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
     cond do
       # Empty list item
-      trimmed == <<>> or is_whitespace_only(trimmed) ->
+      trimmed == <<>> or whitespace_only?(trimmed) ->
         parse_list_items(rest, indent, delim, opts, [%{} | acc])
 
       # Inline array item: [N]: v1,v2
@@ -894,7 +950,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         parse_list_items(item_rest, indent, delim, opts, [item | acc])
 
       # Keyless keyed header: [N:]{fields}: — only valid at root level
-      binary_part(trimmed, 0, 1) == "[" and is_keyed_header(trimmed) ->
+      binary_part(trimmed, 0, 1) == "[" and keyed_header?(trimmed) ->
         if opts.strict do
           raise DecodeError,
             message: "Keyless keyed header not allowed as list item in strict mode",
@@ -909,19 +965,19 @@ defmodule ToonEx.Decode.Fast.Decoder do
         parse_list_items(remaining, indent, delim, opts, [entry_obj | acc])
 
       # List array header: [N]:
-      is_list_array_header(trimmed) ->
+      list_array_header?(trimmed) ->
         {item, item_rest} = parse_nested_list_array_item(trimmed, rest, indent, opts)
         parse_list_items(item_rest, indent, delim, opts, [item | acc])
 
       # Tabular header on hyphen line: key[N]{fields}:
-      is_tabular_header(trimmed) ->
+      tabular_header?(trimmed) ->
         {item, item_rest} =
           parse_list_item_tabular(trimmed, rest, line_indent, indent, opts)
 
         parse_list_items(item_rest, indent, delim, opts, [item | acc])
 
       # List header on hyphen line: key[N]:
-      is_list_header(trimmed) ->
+      list_header?(trimmed) ->
         {item, item_rest} =
           parse_list_item_list_array(trimmed, rest, line_indent, indent, opts)
 
@@ -1011,7 +1067,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         %{}
       else
         sib_depth = first_content_indent(siblings)
-        {sib_map, _qk} = parse_object(siblings, sib_depth, opts, [], [], false)
+        {sib_map, _qk} = parse_object(siblings, sib_depth, opts, [], [], false, false)
         sib_map
       end
 
@@ -1053,7 +1109,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
         %{}
       else
         sib_depth = first_content_indent(sibling_lines)
-        {sib_map, _qk} = parse_object(sibling_lines, sib_depth, opts, [], [], false)
+        {sib_map, _qk} = parse_object(sibling_lines, sib_depth, opts, [], [], false, false)
         sib_map
       end
 
@@ -1068,7 +1124,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   defp separate_sibling_lines(
-         [{content, indent, _escaped?} = line | rest],
+         [{content, indent, _, _} = line | rest],
          sibling_depth,
          sibs,
          items
@@ -1112,25 +1168,26 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
     # Sibling fields at item_indent are shifted to sibling_indent so they
     # are parsed alongside the hyphen-line content at the same depth.
-    shifted_siblings = Enum.map(siblings, fn {c, _indent, b} -> {c, sibling_indent, b} end)
+    shifted_siblings =
+      Enum.map(siblings, fn {c, _indent, b, _} -> {c, sibling_indent, b, false} end)
 
     # Create synthetic line for the hyphen-line content at sibling_indent
-    hyphen_line = {trimmed, sibling_indent, false}
+    hyphen_line = {trimmed, sibling_indent, false, false}
     all_lines = [hyphen_line | continuation ++ shifted_siblings]
 
-    {result, _quoted_keys} = parse_object(all_lines, sibling_indent, opts, [], [], true)
+    {result, _quoted_keys} = parse_object(all_lines, sibling_indent, opts, [], [], true, false)
     {result, remaining}
   end
 
   # Take sibling lines at base_depth that do NOT start with a list marker
   # together with their nested content. These are sibling fields of a list item's object.
-  defp take_item_siblings([{content, indent, false} | rest], base_depth)
+  defp take_item_siblings([{content, indent, false, _} | rest], base_depth)
        when indent == base_depth do
     if starts_with_list_marker(content) do
-      {[], [{content, indent, false} | rest]}
+      {[], [{content, indent, false, false} | rest]}
     else
       {nested, remaining} = take_nested(rest, base_depth)
-      {[{content, indent, false} | nested], remaining}
+      {[{content, indent, false, false} | nested], remaining}
     end
   end
 
@@ -1144,7 +1201,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # fields is an error per spec §12.
   defp check_no_blank_before_nested([], _item_indent), do: :ok
 
-  defp check_no_blank_before_nested([{_, _, true} | rest], item_indent) do
+  defp check_no_blank_before_nested([{_, _, true, _} | rest], item_indent) do
     case peek_indent(rest) do
       ind when ind > item_indent ->
         raise DecodeError,
@@ -1155,12 +1212,12 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp check_no_blank_before_nested([{_content, indent, false} | _rest], item_indent)
+  defp check_no_blank_before_nested([{_content, indent, false, _} | _rest], item_indent)
        when indent > item_indent do
     :ok
   end
 
-  defp check_no_blank_before_nested([{_content, _indent, false} | _rest], _item_indent) do
+  defp check_no_blank_before_nested([{_content, _indent, false, _} | _rest], _item_indent) do
     :ok
   end
 
@@ -1171,7 +1228,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp do_take_tab_rows([], _depth, _delim, _opts, acc), do: {:lists.reverse(acc), []}
 
-  defp do_take_tab_rows([{_, _, true} | rest], depth, delim, opts, acc) do
+  defp do_take_tab_rows([{_, _, true, _} | rest], depth, delim, opts, acc) do
     # Allow blank lines before the first row (between header and first row)
     if opts.strict and acc != [] do
       raise DecodeError, message: "Blank lines are not allowed inside arrays in strict mode"
@@ -1180,9 +1237,9 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp do_take_tab_rows([{content, indent, false} = line | rest], depth, delim, opts, acc)
+  defp do_take_tab_rows([{content, indent, false, _} = line | rest], depth, delim, opts, acc)
        when indent >= depth do
-    if is_row_line(content, delim) do
+    if row_line?(content, delim) do
       do_take_tab_rows(rest, depth, delim, opts, [line | acc])
     else
       {:lists.reverse(acc), [line | rest]}
@@ -1198,11 +1255,12 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp do_take_siblings([], _depth, _opts, acc), do: {:lists.reverse(acc), []}
 
-  defp do_take_siblings([{_, _, true} | rest], depth, opts, acc) do
+  defp do_take_siblings([{_, _, true, _} | rest], depth, opts, acc) do
     do_take_siblings(rest, depth, opts, acc)
   end
 
-  defp do_take_siblings([{_, indent, _} = line | rest], depth, opts, acc) when indent == depth do
+  defp do_take_siblings([{_, indent, _, _} = line | rest], depth, opts, acc)
+       when indent == depth do
     # Sibling at same depth – include it and its nested content
     {nested, remaining} = take_nested(rest, depth)
     all = [line | nested]
@@ -1445,16 +1503,16 @@ defmodule ToonEx.Decode.Fast.Decoder do
     if fields_str == "" or String.trim(fields_str) == "" do
       []
     else
-      if not String.contains?(fields_str, ["\"", "{"]) do
+      if String.contains?(fields_str, ["\"", "{"]) do
+        # Full parse: quotes and/or nested groups
+        split_fields_respecting_groups(fields_str, delimiter)
+        |> Enum.map(&parse_single_field_entry(&1, delimiter))
+      else
         # Fast path: no quotes, no nested groups — plain identifiers
         fields_str
         |> :binary.split(delimiter, [:global])
         |> Enum.map(&trim_leading/1)
         |> Enum.map(&trim_trailing/1)
-      else
-        # Full parse: quotes and/or nested groups
-        split_fields_respecting_groups(fields_str, delimiter)
-        |> Enum.map(&parse_single_field_entry(&1, delimiter))
       end
     end
   end
@@ -1688,32 +1746,30 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp parse_value(str) do
     size = byte_size(str)
 
-    cond do
-      size == 0 ->
-        ""
-
+    if size == 0 do
+      ""
+    else
       # Fast-path: check first byte for common cases
-      true ->
-        first = :binary.first(str)
+      first = :binary.first(str)
 
-        cond do
-          # Quoted string
-          first == ?" ->
-            unquote_string(str)
+      cond do
+        # Quoted string
+        first == ?" ->
+          unquote_string(str)
 
-          # Check for whitespace that needs trimming
-          first == ?\s or first == ?\t ->
-            trimmed = trim_leading(str) |> trim_trailing()
-            do_parse_value(trimmed)
+        # Check for whitespace that needs trimming
+        first == ?\s or first == ?\t ->
+          trimmed = trim_leading(str) |> trim_trailing()
+          do_parse_value(trimmed)
 
-          # Check last byte for trailing whitespace
-          :binary.last(str) in [?\s, ?\t] ->
-            trimmed = trim_trailing(str)
-            do_parse_value(trimmed)
+        # Check last byte for trailing whitespace
+        :binary.last(str) in [?\s, ?\t] ->
+          trimmed = trim_trailing(str)
+          do_parse_value(trimmed)
 
-          true ->
-            do_parse_value(str)
-        end
+        true ->
+          do_parse_value(str)
+      end
     end
   end
 
@@ -1953,16 +2009,16 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp split_and_parse(str, delimiter) do
     actual_delimiter = detect_delimiter(str, delimiter)
 
-    if not contains_byte(str, ?") do
+    if contains_byte(str, ?") do
+      # Slow path: quotes present – use quote-aware splitting
+      do_split_and_parse(str, actual_delimiter, [], false, [])
+    else
       # Fast path: no quotes – use :binary.split (BIF) then list comprehension.
       # List comprehension compiles to a tighter loop than Enum.map because
       # it avoids the Enumerable protocol overhead and the closure allocation
       # for &parse_value/1.
       parts = :binary.split(str, actual_delimiter, [:global])
       for part <- parts, do: parse_value(part)
-    else
-      # Slow path: quotes present – use quote-aware splitting
-      do_split_and_parse(str, actual_delimiter, [], false, [])
     end
   end
 
@@ -2008,11 +2064,11 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp split_and_parse_cells(str, delimiter) do
     actual_delimiter = detect_delimiter(str, delimiter)
 
-    if not contains_byte(str, ?") do
+    if contains_byte(str, ?") do
+      do_split_and_parse_cells(str, actual_delimiter, [], false, [])
+    else
       parts = :binary.split(str, actual_delimiter, [:global])
       for part <- parts, do: parse_cell_value(part)
-    else
-      do_split_and_parse_cells(str, actual_delimiter, [], false, [])
     end
   end
 
@@ -2081,10 +2137,14 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   # ── Utility Functions ──────────────────────────────────────────────────────
 
-  # Count leading spaces and return {trimmed, count}
-  defp count_leading_spaces(<<?\s, rest::binary>>, n), do: count_leading_spaces(rest, n + 1)
-  defp count_leading_spaces(<<?\t, rest::binary>>, n), do: count_leading_spaces(rest, n + 1)
-  defp count_leading_spaces(rest, n), do: {rest, n}
+  # Count leading spaces/tabs and return {trimmed, count, has_tab}
+  defp count_leading_spaces(<<?\s, rest::binary>>, n, has_tab),
+    do: count_leading_spaces(rest, n + 1, has_tab)
+
+  defp count_leading_spaces(<<?\t, rest::binary>>, n, _has_tab),
+    do: count_leading_spaces(rest, n + 1, true)
+
+  defp count_leading_spaces(rest, n, has_tab), do: {rest, n, has_tab}
 
   defp trim_leading(<<?\s, rest::binary>>), do: trim_leading(rest)
   defp trim_leading(<<?\t, rest::binary>>), do: trim_leading(rest)
@@ -2175,17 +2235,17 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp strip_dash_prefix(binary), do: binary
 
   # Check if content is whitespace only (spaces, tabs, carriage returns)
-  defp is_whitespace_only(<<>>), do: true
-  defp is_whitespace_only(<<?\s, rest::binary>>), do: is_whitespace_only(rest)
-  defp is_whitespace_only(<<?\t, rest::binary>>), do: is_whitespace_only(rest)
-  defp is_whitespace_only(<<?\r, rest::binary>>), do: is_whitespace_only(rest)
-  defp is_whitespace_only(_), do: false
+  defp whitespace_only?(<<>>), do: true
+  defp whitespace_only?(<<?\s, rest::binary>>), do: whitespace_only?(rest)
+  defp whitespace_only?(<<?\t, rest::binary>>), do: whitespace_only?(rest)
+  defp whitespace_only?(<<?\r, rest::binary>>), do: whitespace_only?(rest)
+  defp whitespace_only?(_), do: false
 
   # Check if trimmed content is a comment line (starts with # after whitespace removal)
   # Empty or nil content is never a comment
-  defp is_comment_line(<<>>), do: false
-  defp is_comment_line(<<"#", _::binary>>), do: true
-  defp is_comment_line(_), do: false
+  defp comment_line?(<<>>), do: false
+  defp comment_line?(<<"#", _::binary>>), do: true
+  defp comment_line?(_), do: false
 
   # Check for "]: " pattern (inline array).
   # Scans the entire string for the `]: ` sequence.
@@ -2199,7 +2259,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   # Check for keyed tabular header pattern: ends with "}:" and has [N:<delim?>] inside brackets
   # e.g., servers[2:]{host,port}: or servers[2:\t]{host\tport}:
-  defp is_keyed_header(content) do
+  defp keyed_header?(content) do
     size = byte_size(content)
 
     size >= 3 and :binary.last(content) == ?: and
@@ -2224,7 +2284,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   # Check for tabular header pattern: contains "}:" at end and "[" somewhere, but NOT keyed
-  defp is_tabular_header(content) do
+  defp tabular_header?(content) do
     size = byte_size(content)
 
     if size >= 2 do
@@ -2232,7 +2292,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
       if last == ?: do
         second_last = :binary.first(binary_part(content, size - 2, 1))
-        second_last == ?} and contains_byte(content, ?[) and not is_keyed_header(content)
+        second_last == ?} and contains_byte(content, ?[) and not keyed_header?(content)
       else
         false
       end
@@ -2242,7 +2302,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   # Check for list header pattern: ends with "]:" and contains "["
-  defp is_list_header(content) do
+  defp list_header?(content) do
     size = byte_size(content)
 
     if size >= 2 do
@@ -2260,14 +2320,14 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   # Check for list array header: starts with "[" and ends with "]:"
-  defp is_list_array_header(<<?[, _::binary>> = binary) do
+  defp list_array_header?(<<?[, _::binary>> = binary) do
     size = byte_size(binary)
 
     size >= 2 and :binary.last(binary) == ?: and
       :binary.first(binary_part(binary, size - 2, 1)) == ?]
   end
 
-  defp is_list_array_header(_), do: false
+  defp list_array_header?(_), do: false
 
   # Check if key_part has array marker (contains "[")
   defp has_array_marker(<<"\"", rest::binary>>) do
@@ -2284,7 +2344,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp has_array_marker(content), do: contains_byte(content, ?[)
 
   # Check if a line is a tabular row (no unquoted colon, or delimiter before colon)
-  defp is_row_line(content, delimiter) do
+  defp row_line?(content, delimiter) do
     # Fast path: find first unquoted colon
     case find_unquoted_byte(content, ?:) do
       :not_found ->
@@ -2329,16 +2389,16 @@ defmodule ToonEx.Decode.Fast.Decoder do
   end
 
   # Peek at next line's indent (skip blank lines)
-  # Tuple format: {content, indent, is_blank}
+  # Tuple format: {content, indent, is_blank, has_tab}
   defp peek_indent([]), do: 0
-  defp peek_indent([{_, _, true} | rest]), do: peek_indent(rest)
-  defp peek_indent([{_, indent, _} | _]), do: indent
+  defp peek_indent([{_, _, true, _} | rest]), do: peek_indent(rest)
+  defp peek_indent([{_, indent, _, _} | _]), do: indent
 
   # Get the indent of the first non-blank line
-  # Tuple format: {content, indent, is_blank}
+  # Tuple format: {content, indent, is_blank, has_tab}
   defp first_content_indent([]), do: 0
-  defp first_content_indent([{_, _, true} | rest]), do: first_content_indent(rest)
-  defp first_content_indent([{_, indent, _} | _]), do: indent
+  defp first_content_indent([{_, _, true, _} | rest]), do: first_content_indent(rest)
+  defp first_content_indent([{_, indent, _, _} | _]), do: indent
 
   # Take lines that are more indented than base_depth
   # Returns {nested_lines, remaining_lines}
@@ -2348,15 +2408,16 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp do_take_nested([], _base, _seen, acc), do: {:lists.reverse(acc), []}
 
-  defp do_take_nested([{_, indent, false} = line | rest], base, _seen, acc) when indent > base do
+  defp do_take_nested([{_, indent, false, _} = line | rest], base, _seen, acc)
+       when indent > base do
     do_take_nested(rest, base, true, [line | acc])
   end
 
-  defp do_take_nested([{_, _, false} | _] = lines, _base, _seen, acc) do
+  defp do_take_nested([{_, _, false, _} | _] = lines, _base, _seen, acc) do
     {:lists.reverse(acc), lines}
   end
 
-  defp do_take_nested([{_, _, true} = line | rest], base, seen, acc) do
+  defp do_take_nested([{_, _, true, _} = line | rest], base, seen, acc) do
     if seen do
       case peek_indent(rest) do
         ind when ind > base -> do_take_nested(rest, base, true, [line | acc])

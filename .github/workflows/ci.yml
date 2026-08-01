@@ -107,7 +107,7 @@ jobs:
         run: mix deps.get
 
       - name: Run quality checks
-        run: mix quality.ci
+        run: mix quality
 
   coverage:
     name: Test Coverage

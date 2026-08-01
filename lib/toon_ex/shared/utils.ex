@@ -347,63 +347,71 @@ defmodule ToonEx.Utils do
           | {:tabular, non_neg_integer(), [String.t()]}
           | {:list, non_neg_integer()}
   def detect_array_type(list) when is_list(list) do
-    do_detect_array_type(list, {true, true, true, nil, 0})
+    do_detect_array_type(list, {true, true, true, nil, 0, false})
   end
 
   # Single-pass array type detection
-  # State: {all_primitives, all_maps, all_primitive_values, keys, count}
-  defp do_detect_array_type([], {false, true, true, keys, count})
+  # State: {all_primitives, all_maps, all_primitive_values, keys, count, count_only}
+  # When count_only is true, we just count remaining elements without type checking
+  defp do_detect_array_type([], {false, true, true, keys, count, _count_only})
        when is_list(keys) and keys != [],
        do: {:tabular, count, keys}
 
-  defp do_detect_array_type([], {true, _, _, _, count}),
+  defp do_detect_array_type([], {true, _, _, _, count, _count_only}),
     do: {:primitive, count}
 
-  defp do_detect_array_type([], {_, _, _, _, count}),
+  defp do_detect_array_type([], {_, _, _, _, count, _count_only}),
     do: {:list, count}
 
-  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count}) do
+  # Count-only mode: just count remaining elements (merged from do_count_remaining)
+  defp do_detect_array_type([_ | t], {_, _, _, _, count, true}) do
+    do_detect_array_type(t, {false, false, false, nil, count + 1, true})
+  end
+
+  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count, false}) do
     new_count = count + 1
 
     cond do
-      # Early exit: already determined as list (has both primitives and maps, or maps with non-primitive values)
+      # Early exit: already determined as list - switch to count-only mode
       (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
-        do_count_remaining(t, new_count)
+        do_detect_array_type(t, {false, false, false, nil, new_count, true})
 
       # Primitive element - makes it not all-maps
       primitive?(h) ->
-        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count})
+        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count, false})
 
       # Map element
       is_map(h) ->
-        h_keys = Map.keys(h) |> Enum.sort()
+        h_keys = Map.keys(h)
         h_all_prim = map_values_primitive?(h)
 
         new_keys =
           if keys do
-            if h_keys == keys, do: keys, else: nil
+            # Set-equality check: same size and all reference keys present
+            if map_size(h) == length(keys) and Enum.all?(keys, &Map.has_key?(h, &1)) do
+              keys
+            else
+              nil
+            end
           else
             h_keys
           end
 
         # If values aren't all primitive, we can early-exit to list
-        if not h_all_prim do
-          do_count_remaining(t, new_count)
-        else
+        if h_all_prim do
           do_detect_array_type(
             t,
-            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count}
+            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count, false}
           )
+        else
+          do_detect_array_type(t, {false, false, false, nil, new_count, true})
         end
 
       # Other element -> list
       true ->
-        do_count_remaining(t, new_count)
+        do_detect_array_type(t, {false, false, false, nil, new_count, true})
     end
   end
-
-  defp do_count_remaining([], count), do: {:list, count}
-  defp do_count_remaining([_ | t], count), do: do_count_remaining(t, count + 1)
 
   @doc """
   Formats a length marker for arrays.
@@ -420,10 +428,12 @@ defmodule ToonEx.Utils do
   @compile {:inline, format_length_marker: 2}
   def format_length_marker(length, nil), do: Integer.to_string(length)
 
-  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
-  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
-  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
-  # everything in one pass, so nested iolists are free.
+  # Performance: Return iolist instead of binary concatenation
+  # (marker <> Integer.to_string(length)). The iolist
+  # [marker, Integer.to_string(length)] avoids allocating a new binary
+  # and copying both strings into it. The final IO.iodata_to_binary at
+  # the top-level encoder flattens everything in one pass, so nested
+  # iolists are free.
   def format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @doc """

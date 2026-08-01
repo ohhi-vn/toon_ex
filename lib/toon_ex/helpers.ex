@@ -26,6 +26,7 @@ defmodule ToonEx.Helpers do
 
   """
 
+  alias ToonEx.Encode.Primitives
   alias ToonEx.Fragment
 
   @doc """
@@ -154,7 +155,7 @@ defmodule ToonEx.Helpers do
       Enum.zip(sorted_pairs, sorted_vars)
       |> Enum.map(fn {{key_str, _value}, var} ->
         quote do
-          [unquote(key_str), ":", " ", ToonEx.Encode.Primitives.encode(unquote(var), ",")]
+          [unquote(key_str), ":", " ", Primitives.encode(unquote(var), ",")]
         end
       end)
 
@@ -177,7 +178,7 @@ defmodule ToonEx.Helpers do
       Enum.zip(sorted_string_keys, sorted_vars)
       |> Enum.map(fn {key_str, var} ->
         quote do
-          [unquote(key_str), ":", " ", ToonEx.Encode.Primitives.encode(unquote(var), ",")]
+          [unquote(key_str), ":", " ", Primitives.encode(unquote(var), ",")]
         end
       end)
 

@@ -4,10 +4,11 @@ defmodule ToonEx.ImplHelperTest do
   describe "ToonEx.ToonImplHelper.gen_impl/1 macro" do
     test "macro generates defimpl for given module when expanded" do
       # The macro generates a block with defimpl inside
-      expanded = quote do
-        ToonEx.ToonImplHelper.gen_impl(TestModule)
-      end
-      |> Macro.expand(__ENV__)
+      expanded =
+        quote do
+          ToonEx.ToonImplHelper.gen_impl(TestModule)
+        end
+        |> Macro.expand(__ENV__)
 
       # The macro generates a block with defimpl inside
       assert is_tuple(expanded)
@@ -27,19 +28,20 @@ defmodule ToonEx.ImplHelperTest do
     test "module has gen_impl macro defined" do
       macros = ToonEx.ToonImplHelper.__info__(:macros)
       macro_names = Enum.map(macros, fn {name, _arity} -> name end)
-      
+
       assert :gen_impl in macro_names
       assert :__using__ in macro_names
     end
 
     test "__using__ macro generates implementations when given impl option" do
       # Test that the macro expands correctly with impl option
-      expanded = quote do
-        defmodule TestModuleUsingHelper do
-          use ToonEx.ToonImplHelper, impl: [TestModule2]
+      expanded =
+        quote do
+          defmodule TestModuleUsingHelper do
+            use ToonEx.ToonImplHelper, impl: [TestModule2]
+          end
         end
-      end
-      |> Macro.expand(__ENV__)
+        |> Macro.expand(__ENV__)
 
       assert is_tuple(expanded)
     end
@@ -60,8 +62,7 @@ defmodule ToonEx.ImplHelperTest do
       # If Macro.expand didn't expand (runtime context), call the macro directly
       expanded =
         if expanded ==
-             {:., [],
-              [{:__aliases__, [alias: false], [:ToonEx, :ToonImplHelper]}, :gen_impl]} do
+             {:., [], [{:__aliases__, [alias: false], [:ToonEx, :ToonImplHelper]}, :gen_impl]} do
           ToonEx.ToonImplHelper.gen_impl(TestModule)
         else
           expanded
@@ -74,12 +75,13 @@ defmodule ToonEx.ImplHelperTest do
     end
 
     test "macro handles multiple modules in impl option" do
-      expanded = quote do
-        defmodule TestModuleUsingHelper2 do
-          use ToonEx.ToonImplHelper, impl: [TestModule, TestModule2]
+      expanded =
+        quote do
+          defmodule TestModuleUsingHelper2 do
+            use ToonEx.ToonImplHelper, impl: [TestModule, TestModule2]
+          end
         end
-      end
-      |> Macro.expand(__ENV__)
+        |> Macro.expand(__ENV__)
 
       assert is_tuple(expanded)
     end

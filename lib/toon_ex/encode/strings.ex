@@ -131,137 +131,127 @@ defmodule ToonEx.Encode.Strings do
   """
   @spec escape_string(String.t()) :: iodata()
   def escape_string(data) when is_binary(data) do
-    escape_string(data, [], data, 0)
+    # Single-pass escape with chunk tracking
+    do_escape_string(data, data, 0, 0, [], byte_size(data))
   end
 
-  # ── Main escape loop ────────────────────────────────────────────────────────
-  # Scans for bytes that need escaping. When a safe byte is found,
-  # delegates to the chunk accumulation loop.
-  #
-  # State: {rest, acc, original, skip}
-  #   rest     — remaining bytes to process
-  #   acc      — accumulated iodata (chunk references and escape sequences)
-  #   original — the original binary (for binary_part references)
-  #   skip     — offset into original where current chunk would start
+  # Single-pass escape loop with accumulator.
+  # State: {rest, original, chunk_start, chunk_len, acc}
+  #   rest         — remaining bytes to process
+  #   original     — the original binary (for binary_part references)
+  #   chunk_start  — offset into original where current chunk starts
+  #   chunk_len    — length of current safe chunk being accumulated
+  #   acc          — accumulated iodata (chunk references and escape sequences) in REVERSE order
 
   # Backslash needs escaping: \ → \\
-  defp escape_string(<<?\\, rest::binary>>, acc, original, skip) do
-    acc = [acc | escape_byte(?\\)]
-    escape_string(rest, acc, original, skip + 1)
+  defp do_escape_string(<<?\\, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [escape_byte(?\\) | acc],
+      size_hint
+    )
   end
 
   # Double quote needs escaping: " → \"
-  defp escape_string(<<?", rest::binary>>, acc, original, skip) do
-    acc = [acc | escape_byte(?")]
-    escape_string(rest, acc, original, skip + 1)
+  defp do_escape_string(<<?", rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [escape_byte(?") | acc],
+      size_hint
+    )
   end
 
   # Newline needs escaping: \n → \\n
-  defp escape_string(<<?\n, rest::binary>>, acc, original, skip) do
-    acc = [acc | escape_byte(?\n)]
-    escape_string(rest, acc, original, skip + 1)
+  defp do_escape_string(<<?\n, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [escape_byte(?\n) | acc],
+      size_hint
+    )
   end
 
   # Carriage return needs escaping: \r → \\r
-  defp escape_string(<<?\r, rest::binary>>, acc, original, skip) do
-    acc = [acc | escape_byte(?\r)]
-    escape_string(rest, acc, original, skip + 1)
+  defp do_escape_string(<<?\r, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [escape_byte(?\r) | acc],
+      size_hint
+    )
   end
 
   # Tab needs escaping: \t → \\t
-  defp escape_string(<<?\t, rest::binary>>, acc, original, skip) do
-    acc = [acc | escape_byte(?\t)]
-    escape_string(rest, acc, original, skip + 1)
+  defp do_escape_string(<<?\t, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [escape_byte(?\t) | acc],
+      size_hint
+    )
   end
 
   # Control characters (U+0000 to U+001F, U+007F) — escape as \uXXXX
-  defp escape_string(<<byte, rest::binary>>, acc, original, skip) when byte < 32 or byte == 127 do
-    replacement = "\\u#{escape_control(byte)}"
-    escape_string(rest, [acc | replacement], original, skip + 1)
-  end
-
-  # Safe ASCII byte (0x00-0x7F, excluding control chars and the 5 chars above) — enter chunk mode
-  defp escape_string(<<byte, rest::binary>>, acc, original, skip) when byte < 128 do
-    escape_string_chunk(rest, acc, original, skip, 1)
-  end
-
-  # Multi-byte UTF-8 byte (>= 128) — enter chunk mode (no escaping needed)
-  defp escape_string(<<_byte, rest::binary>>, acc, original, skip) do
-    escape_string_chunk(rest, acc, original, skip, 1)
-  end
-
-  # End of input — return accumulated iodata (no trailing chunk to flush)
-  defp escape_string(<<>>, acc, _original, _skip) do
-    acc
-  end
-
-  # ── Chunk accumulation loop ─────────────────────────────────────────────────
-  # Keeps scanning safe bytes, extending the chunk length. When a byte needing
-  # escaping is found, flushes the chunk via binary_part/3 and appends the escape.
-  #
-  # State: {rest, acc, original, skip, len}
-  #   len — length of the current safe chunk
-
-  # Backslash in chunk — flush chunk, then escape
-  defp escape_string_chunk(<<?\\, rest::binary>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    acc = [acc, part | escape_byte(?\\)]
-    escape_string(rest, acc, original, skip + len + 1)
-  end
-
-  # Double quote in chunk — flush chunk, then escape
-  defp escape_string_chunk(<<?", rest::binary>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    acc = [acc, part | escape_byte(?")]
-    escape_string(rest, acc, original, skip + len + 1)
-  end
-
-  # Newline in chunk — flush chunk, then escape
-  defp escape_string_chunk(<<?\n, rest::binary>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    acc = [acc, part | escape_byte(?\n)]
-    escape_string(rest, acc, original, skip + len + 1)
-  end
-
-  # Carriage return in chunk — flush chunk, then escape
-  defp escape_string_chunk(<<?\r, rest::binary>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    acc = [acc, part | escape_byte(?\r)]
-    escape_string(rest, acc, original, skip + len + 1)
-  end
-
-  # Tab in chunk — flush chunk, then escape
-  defp escape_string_chunk(<<?\t, rest::binary>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    acc = [acc, part | escape_byte(?\t)]
-    escape_string(rest, acc, original, skip + len + 1)
-  end
-
-  # Control characters (U+0000 to U+001F, U+007F) in chunk — flush chunk, then escape as \uXXXX
-  defp escape_string_chunk(<<byte, rest::binary>>, acc, original, skip, len)
+  defp do_escape_string(<<byte, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint)
        when byte < 32 or byte == 127 do
-    part = binary_part(original, skip, len)
+    acc = flush_chunk(acc, original, chunk_start, chunk_len)
     replacement = "\\u#{escape_control(byte)}"
-    acc = [acc, part | replacement]
-    escape_string(rest, acc, original, skip + len + 1)
+
+    do_escape_string(
+      rest,
+      original,
+      chunk_start + chunk_len + 1,
+      0,
+      [replacement | acc],
+      size_hint
+    )
   end
 
-  # Safe ASCII byte in chunk — extend chunk length
-  defp escape_string_chunk(<<byte, rest::binary>>, acc, original, skip, len)
+  # Safe ASCII byte (0x00-0x7F, excluding control chars and the 5 chars above) — extend chunk
+  defp do_escape_string(<<byte, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint)
        when byte < 128 do
-    escape_string_chunk(rest, acc, original, skip, len + 1)
+    do_escape_string(rest, original, chunk_start, chunk_len + 1, acc, size_hint)
   end
 
-  # Multi-byte UTF-8 byte in chunk — extend chunk length
-  # (UTF-8 bytes >= 0x80 are never structure chars, never need escaping)
-  defp escape_string_chunk(<<_byte, rest::binary>>, acc, original, skip, len) do
-    escape_string_chunk(rest, acc, original, skip, len + 1)
+  # Multi-byte UTF-8 byte (>= 128) — extend chunk (no escaping needed)
+  defp do_escape_string(<<_byte, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint) do
+    do_escape_string(rest, original, chunk_start, chunk_len + 1, acc, size_hint)
   end
 
-  # End of input in chunk — flush final chunk
-  defp escape_string_chunk(<<>>, acc, original, skip, len) do
-    part = binary_part(original, skip, len)
-    [acc | part]
+  # End of input — flush final chunk and reverse accumulator
+  defp do_escape_string(<<>>, original, chunk_start, chunk_len, acc, _size_hint) do
+    final_acc = flush_chunk(acc, original, chunk_start, chunk_len)
+    :lists.reverse(final_acc)
+  end
+
+  # Flush accumulated chunk via binary_part (O(1) sub-binary reference)
+  @compile {:inline, flush_chunk: 4}
+  defp flush_chunk(acc, _original, _chunk_start, 0), do: acc
+
+  defp flush_chunk(acc, original, chunk_start, chunk_len) do
+    [binary_part(original, chunk_start, chunk_len) | acc]
   end
 
   # ── Escape byte lookup ──────────────────────────────────────────────────────

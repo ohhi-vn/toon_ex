@@ -53,11 +53,24 @@ defmodule ToonEx.Shared.TypesTest do
     end
 
     test "no unexpected types are defined", %{types_map: types_map} do
-      expected_keys = MapSet.new([:primitive, :input, :encodable, :encode_opts, :encode_opt, :delimiter, :decode_opts, :decode_opt, :depth, :iodata_result])
+      expected_keys =
+        MapSet.new([
+          :primitive,
+          :input,
+          :encodable,
+          :encode_opts,
+          :encode_opt,
+          :delimiter,
+          :decode_opts,
+          :decode_opt,
+          :depth,
+          :iodata_result
+        ])
+
       actual_keys = MapSet.new(Map.keys(types_map))
 
       assert MapSet.equal?(expected_keys, actual_keys),
-               "Mismatch - expected: #{inspect(MapSet.difference(expected_keys, actual_keys))}, actual extra: #{inspect(MapSet.difference(actual_keys, expected_keys))}"
+             "Mismatch - expected: #{inspect(MapSet.difference(expected_keys, actual_keys))}, actual extra: #{inspect(MapSet.difference(actual_keys, expected_keys))}"
     end
 
     test "primitive type includes nil, boolean, number, and String.t()", %{types: types} do
@@ -65,15 +78,16 @@ defmodule ToonEx.Shared.TypesTest do
 
       assert type_kind == :union
 
-      type_names = Enum.map(union_types, fn
-        {:atom, _, nil} -> :nil
-        {:type, _, :boolean, _} -> :boolean
-        {:type, _, :number, _} -> :number
-        {:remote_type, _, [_, _ | _]} -> :binary
-        _ -> :other
-      end)
+      type_names =
+        Enum.map(union_types, fn
+          {:atom, _, nil} -> nil
+          {:type, _, :boolean, _} -> :boolean
+          {:type, _, :number, _} -> :number
+          {:remote_type, _, [_, _ | _]} -> :binary
+          _ -> :other
+        end)
 
-      assert :nil in type_names
+      assert nil in type_names
       assert :boolean in type_names
       assert :number in type_names
       assert :binary in type_names
@@ -88,17 +102,18 @@ defmodule ToonEx.Shared.TypesTest do
 
       assert type_kind == :union
 
-      type_names = Enum.map(union_types, fn
-        {:atom, _, nil} -> :nil
-        {:type, _, :boolean, _} -> :boolean
-        {:type, _, :number, _} -> :number
-        {:remote_type, _, [_, _ | _]} -> :binary
-        {:type, _, :map, _} -> :map
-        {:type, _, :list, _} -> :list
-        _ -> :other
-      end)
+      type_names =
+        Enum.map(union_types, fn
+          {:atom, _, nil} -> nil
+          {:type, _, :boolean, _} -> :boolean
+          {:type, _, :number, _} -> :number
+          {:remote_type, _, [_, _ | _]} -> :binary
+          {:type, _, :map, _} -> :map
+          {:type, _, :list, _} -> :list
+          _ -> :other
+        end)
 
-      assert :nil in type_names
+      assert nil in type_names
       assert :boolean in type_names
       assert :number in type_names
       assert :map in type_names
@@ -112,10 +127,11 @@ defmodule ToonEx.Shared.TypesTest do
     test "encode_opt is a union of tuples", %{types: types} do
       {:type, _, :union, union_types} = find_type!(types, :encode_opt)
 
-      tuple_count = Enum.count(union_types, fn
-        {:type, _, :tuple, _} -> true
-        _ -> false
-      end)
+      tuple_count =
+        Enum.count(union_types, fn
+          {:type, _, :tuple, _} -> true
+          _ -> false
+        end)
 
       assert tuple_count == 5
     end
@@ -131,10 +147,11 @@ defmodule ToonEx.Shared.TypesTest do
     test "decode_opt is a union of tuples", %{types: types} do
       {:type, _, :union, union_types} = find_type!(types, :decode_opt)
 
-      tuple_count = Enum.count(union_types, fn
-        {:type, _, :tuple, _} -> true
-        _ -> false
-      end)
+      tuple_count =
+        Enum.count(union_types, fn
+          {:type, _, :tuple, _} -> true
+          _ -> false
+        end)
 
       assert tuple_count == 4
     end

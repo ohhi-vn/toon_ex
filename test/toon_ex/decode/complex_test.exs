@@ -15,7 +15,7 @@ defmodule ToonEx.Decode.ComplexObjectTest do
               },
               %{
                 "id" => "abc",
-                "timestamp" => 1257
+                "timestamp" => 1_257
               }
             ]
           }
@@ -91,7 +91,7 @@ defmodule ToonEx.Decode.ComplexObjectTest do
             "token" => "",
             "device_id" => "test",
             "gps_data" => %{
-              "timestamp" => 30522,
+              "timestamp" => 30_522,
               "lon" => -122.03852007,
               "lat" => 37.3325448,
               "ele" => 0
@@ -127,7 +127,7 @@ defmodule ToonEx.Decode.ComplexObjectTest do
           "device_id" => "test",
           "gps_data" => %{
             "empty_field" => %{},
-            "timestamp" => 30522,
+            "timestamp" => 30_522,
             "lon" => -122.03852007,
             "lat" => 37.3325448,
             "ele" => 0

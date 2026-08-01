@@ -70,8 +70,13 @@ defmodule ToonEx.Options.Validator do
   """
   @spec validate(keyword(), [schema_option()]) :: validation_result()
   def validate(opts, schema) when is_list(opts) and is_list(schema) do
-    opts_map = Map.new(opts)
     schema_keys = Keyword.keys(schema) |> MapSet.new()
+    validate(opts, schema, schema_keys)
+  end
+
+  @spec validate(keyword(), [schema_option()], MapSet.t()) :: validation_result()
+  def validate(opts, schema, schema_keys) when is_list(opts) and is_list(schema) do
+    opts_map = Map.new(opts)
 
     # Check for unknown options
     case find_unknown_key(opts, schema_keys) do

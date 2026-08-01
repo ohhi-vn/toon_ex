@@ -1,4 +1,10 @@
 defmodule ToonEx.ToonImplHelper do
+  @moduledoc """
+  Helper macro for generating ToonEx.Encoder protocol implementations.
+
+  Allows modules to easily implement the ToonEx.Encoder protocol by providing
+  a list of modules that have an `encode!` function.
+  """
   @doc """
   Macro to generate simple implementation of protocol.
   Support for easy to use with ToonEx.Encoder.

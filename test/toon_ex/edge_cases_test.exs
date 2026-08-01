@@ -264,7 +264,7 @@ defmodule ToonEx.EdgeCasesTest do
       assert result == %{"parent" => %{"child" => "v"}, "sibling" => "x"}
     end
 
-test "atoms! key mode" do
+    test "atoms! key mode" do
       _ = String.to_atom("id")
       _ = String.to_atom("name")
       assert {:ok, result} = ToonEx.decode("id: 1\nname: Alice", keys: :atoms!)

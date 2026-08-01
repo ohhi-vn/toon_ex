@@ -539,7 +539,8 @@ defmodule ToonEx.Decode.StructuralParser do
                 if is_primitive and opts.strict do
                   # Primitive value cannot have nested content - over-indented line
                   raise DecodeError,
-                    message: "Over-indented line after primitive field: primitive fields cannot have nested content",
+                    message:
+                      "Over-indented line after primitive field: primitive fields cannot have nested content",
                     input: Enum.at(rest, 0).original
                 else
                   {nested_value, nested_meta} =
@@ -685,9 +686,11 @@ defmodule ToonEx.Decode.StructuralParser do
         # (base_indent + 2 * indent_size) indentation for nested objects inside list items.
         if opts.strict do
           depth_diff = indent - base_indent
+
           if depth_diff <= 0 or rem(depth_diff, opts.indent_size) != 0 do
             raise DecodeError,
-              message: "Indentation jump: expected indent #{base_indent + opts.indent_size}, got #{indent}",
+              message:
+                "Indentation jump: expected indent #{base_indent + opts.indent_size}, got #{indent}",
               input: hd(rest).original
           end
         end
@@ -715,9 +718,11 @@ defmodule ToonEx.Decode.StructuralParser do
     # (base_indent + 2 * indent_size) indentation for nested objects inside list items.
     if opts.strict do
       depth_diff = actual_indent - base_indent
+
       if depth_diff <= 0 or rem(depth_diff, opts.indent_size) != 0 do
         raise DecodeError,
-          message: "Depth jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
+          message:
+            "Depth jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
           input: Enum.at(nested_lines, 0) |> Map.get(:original, "")
       end
     end
@@ -737,9 +742,11 @@ defmodule ToonEx.Decode.StructuralParser do
     # (base_indent + 2 * indent_size) indentation for nested objects inside list items.
     if opts.strict do
       depth_diff = actual_indent - base_indent
+
       if depth_diff <= 0 or rem(depth_diff, opts.indent_size) != 0 do
         raise DecodeError,
-          message: "Depth jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
+          message:
+            "Depth jump: nested content must be indented by a multiple of #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
           input: Enum.at(nested_lines, 0) |> Map.get(:original, "")
       end
     end
@@ -776,22 +783,28 @@ defmodule ToonEx.Decode.StructuralParser do
 
             if first_row_indent != expected_row_indent do
               raise DecodeError,
-                message: "Depth jump: tabular rows must be indented by exactly #{opts.indent_size} spaces (got #{first_row_indent}, expected #{expected_row_indent})",
+                message:
+                  "Depth jump: tabular rows must be indented by exactly #{opts.indent_size} spaces (got #{first_row_indent}, expected #{expected_row_indent})",
                 input: Enum.at(data_rows, 0).original
             end
 
             # Check for over-indented lines in strict mode
-            over_indented = Enum.find(data_rows, fn line ->
-              not line.is_blank and line.indent > expected_row_indent
-            end)
+            over_indented =
+              Enum.find(data_rows, fn line ->
+                not line.is_blank and line.indent > expected_row_indent
+              end)
+
             if over_indented do
               raise DecodeError,
-                message: "Over-indented line after tabular rows: tabular rows cannot have nested content",
+                message:
+                  "Over-indented line after tabular rows: tabular rows cannot have nested content",
                 input: over_indented.original
             end
 
             # Filter rows to only include those at the expected indent level
-            Enum.filter(data_rows, fn line -> line.indent == expected_row_indent or line.is_blank end)
+            Enum.filter(data_rows, fn line ->
+              line.indent == expected_row_indent or line.is_blank
+            end)
           else
             # In non-strict mode, include all nested lines
             data_rows
@@ -817,7 +830,13 @@ defmodule ToonEx.Decode.StructuralParser do
   # Performance: Single-pass processing - filter blanks and parse in one traversal
   defp parse_tabular_data_rows(lines, fields, delimiter, opts) do
     field_count = length(fields)
-    expected_indent = if lines != [] do get_first_content_indent(lines) else 0 end
+
+    expected_indent =
+      if lines != [] do
+        get_first_content_indent(lines)
+      else
+        0
+      end
 
     Enum.reduce(lines, [], fn line, acc ->
       if line.is_blank do
@@ -832,7 +851,8 @@ defmodule ToonEx.Decode.StructuralParser do
         # In strict mode, validate all rows have the same indent
         if opts.strict and line.indent != expected_indent do
           raise DecodeError,
-            message: "Inconsistent row indentation: expected #{expected_indent}, got #{line.indent}",
+            message:
+              "Inconsistent row indentation: expected #{expected_indent}, got #{line.indent}",
             input: line.original
         end
 
@@ -921,7 +941,8 @@ defmodule ToonEx.Decode.StructuralParser do
     # In strict mode, validate that list items are exactly one level deeper
     if opts.strict and actual_indent != base_indent + opts.indent_size do
       raise DecodeError,
-        message: "Depth jump: list items must be indented by exactly #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
+        message:
+          "Depth jump: list items must be indented by exactly #{opts.indent_size} spaces (got #{actual_indent}, expected #{base_indent + opts.indent_size})",
         input: Enum.at(list_lines, 0) |> Map.get(:original, "")
     end
 
@@ -946,7 +967,8 @@ defmodule ToonEx.Decode.StructuralParser do
       # In strict mode, validate all list items have the expected indent
       opts.strict and line.indent != expected_indent ->
         raise DecodeError,
-          message: "Inconsistent list item indentation: expected #{expected_indent}, got #{line.indent}",
+          message:
+            "Inconsistent list item indentation: expected #{expected_indent}, got #{line.indent}",
           input: line.original
 
       # Inline array item with values on same line: - [N]: val1,val2
@@ -1052,7 +1074,7 @@ defmodule ToonEx.Decode.StructuralParser do
       continuation_lines = take_item_lines(rest, expected_indent)
 
       item_indent =
-        if length(continuation_lines) > 0,
+        if continuation_lines != [],
           do: continuation_lines |> Enum.map(& &1.indent) |> Enum.min(),
           else: line.indent
 

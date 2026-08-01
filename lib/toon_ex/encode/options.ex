@@ -53,6 +53,19 @@ defmodule ToonEx.Encode.Options do
     ]
   ]
 
+  @schema_keys MapSet.new(Keyword.keys(@options_schema))
+
+  @default_validated %{
+    indent: 2,
+    indent_size: 2,
+    delimiter: ",",
+    length_marker: nil,
+    key_order: nil,
+    key_folding: :off,
+    flatten_depth: :infinity,
+    indent_string: "  "
+  }
+
   @doc """
   Returns the options schema.
   """
@@ -67,8 +80,8 @@ defmodule ToonEx.Encode.Options do
       iex> ToonEx.Encode.Options.validate([])
       {:ok, %{indent: 2, delimiter: ",", length_marker: nil, indent_string: "  "}}
 
-      iex> ToonEx.Encode.Options.validate(indent: 4, delimiter: "\\t")
-      {:ok, %{indent: 4, delimiter: "\\t", length_marker: nil, indent_string: "    "}}
+      iex> ToonEx.Encode.Options.validate(indent: 4, delimiter: "\t")
+      {:ok, %{indent: 4, delimiter: "\t", length_marker: nil, indent_string: "    "}}
 
       iex> match?({:error, _}, ToonEx.Encode.Options.validate(indent: -1))
       true
@@ -77,8 +90,10 @@ defmodule ToonEx.Encode.Options do
       true
   """
   @spec validate(keyword()) :: {:ok, map()} | {:error, Validator.t()}
+  def validate([]), do: {:ok, @default_validated}
+
   def validate(opts) when is_list(opts) do
-    case Validator.validate(opts, @options_schema) do
+    case Validator.validate(opts, @options_schema, @schema_keys) do
       {:ok, validated} ->
         validated_map = Map.new(validated)
 
@@ -114,6 +129,8 @@ defmodule ToonEx.Encode.Options do
       %{indent: 4, delimiter: ",", length_marker: nil, indent_string: "    "}
   """
   @spec validate!(keyword()) :: validated()
+  def validate!([]), do: @default_validated
+
   def validate!(opts) do
     case validate(opts) do
       {:ok, validated} -> validated

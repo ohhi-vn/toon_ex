@@ -16,11 +16,13 @@ defmodule ToonEx.Fixtures.Complex do
   # ── leaf structs ────────────────────────────────────────────────────────────
 
   defmodule Address do
+    @moduledoc false
     @derive ToonEx.Encoder
     defstruct [:street, :city, :country, :postcode]
   end
 
   defmodule Project do
+    @moduledoc false
     @derive ToonEx.Encoder
     defstruct [:id, :name, :active, :score]
   end
@@ -36,16 +38,19 @@ defmodule ToonEx.Fixtures.Complex do
   end
 
   defmodule Employee do
+    @moduledoc false
     @derive {ToonEx.Encoder, except: [:secret]}
     defstruct [:id, :name, :role, :salary, :active, :tags, :address, :projects, :secret]
   end
 
   defmodule Department do
+    @moduledoc false
     @derive ToonEx.Encoder
     defstruct [:id, :name, :head, :employees, :budget, :metadata]
   end
 
   defmodule Organisation do
+    @moduledoc false
     @derive ToonEx.Encoder
     defstruct [:id, :name, :founded, :public, :rating, :departments, :notes]
   end

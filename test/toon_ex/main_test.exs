@@ -19,19 +19,23 @@ defmodule ToonEx.MainTest do
     end
 
     test "encodes with custom indent" do
-      assert {:ok, "user:\n    name: Bob"} = ToonEx.encode(%{"user" => %{"name" => "Bob"}}, indent: 4)
+      assert {:ok, "user:\n    name: Bob"} =
+               ToonEx.encode(%{"user" => %{"name" => "Bob"}}, indent: 4)
     end
 
     test "encodes with tab delimiter" do
-      assert {:ok, "tags[2\t]: elixir\ttoon"} = ToonEx.encode(%{"tags" => ["elixir", "toon"]}, delimiter: "\t")
+      assert {:ok, "tags[2\t]: elixir\ttoon"} =
+               ToonEx.encode(%{"tags" => ["elixir", "toon"]}, delimiter: "\t")
     end
 
     test "encodes with pipe delimiter" do
-      assert {:ok, "tags[2|]: elixir|toon"} = ToonEx.encode(%{"tags" => ["elixir", "toon"]}, delimiter: "|")
+      assert {:ok, "tags[2|]: elixir|toon"} =
+               ToonEx.encode(%{"tags" => ["elixir", "toon"]}, delimiter: "|")
     end
 
     test "encodes with length marker" do
-      assert {:ok, "tags[#2]: elixir,toon"} = ToonEx.encode(%{"tags" => ["elixir", "toon"]}, length_marker: "#")
+      assert {:ok, "tags[#2]: elixir,toon"} =
+               ToonEx.encode(%{"tags" => ["elixir", "toon"]}, length_marker: "#")
     end
 
     test "encodes with key_folding safe" do
@@ -96,7 +100,8 @@ defmodule ToonEx.MainTest do
     end
 
     test "decodes with custom indent size" do
-      assert {:ok, %{"user" => %{"name" => "Bob"}}} = ToonEx.decode("user:\n    name: Bob", indent_size: 4)
+      assert {:ok, %{"user" => %{"name" => "Bob"}}} =
+               ToonEx.decode("user:\n    name: Bob", indent_size: 4)
     end
 
     test "decodes simple key-value with decode!" do

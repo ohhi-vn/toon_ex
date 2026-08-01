@@ -1,8 +1,8 @@
 defmodule ToonEx.Phoenix.SerializerTest do
   use ExUnit.Case, async: true
 
-  alias ToonEx.Phoenix.Serializer
   alias Phoenix.Socket.{Broadcast, Message, Reply}
+  alias ToonEx.Phoenix.Serializer
 
   # ── Helper: create mock Phoenix structs (Phoenix is not a test dependency) ──
 

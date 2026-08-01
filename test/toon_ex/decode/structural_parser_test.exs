@@ -55,7 +55,11 @@ defmodule ToonEx.Decode.StructuralParserTest do
     test "parses tabular array" do
       toon = "users[2]{name,age}:\n  Alice,30\n  Bob,25"
       {:ok, {result, _}} = StructuralParser.parse(toon, @opts)
-      assert result["users"] == [%{"name" => "Alice", "age" => 30}, %{"name" => "Bob", "age" => 25}]
+
+      assert result["users"] == [
+               %{"name" => "Alice", "age" => 30},
+               %{"name" => "Bob", "age" => 25}
+             ]
     end
 
     test "parses list array" do

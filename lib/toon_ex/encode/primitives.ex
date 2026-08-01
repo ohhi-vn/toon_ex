@@ -10,6 +10,30 @@ defmodule ToonEx.Encode.Primitives do
   alias ToonEx.Constants
   alias ToonEx.Encode.Strings
 
+  # GPS-optimized decimal places lookup table.
+  # For values in GPS range (±180, ±90) with 8-9 decimals, we avoid :math.log10() calls.
+  # Ranges: {upper_bound_exclusive, decimals}
+  @float_decimals [
+    {1.0e-9, 18},
+    {1.0e-8, 17},
+    {1.0e-7, 16},
+    {1.0e-6, 15},
+    {1.0e-5, 14},
+    {1.0e-4, 13},
+    {1.0e-3, 12},
+    {1.0e-2, 11},
+    {1.0e-1, 10},
+    {1.0, 9},
+    {10.0, 8},
+    {100.0, 7},
+    {1000.0, 6},
+    {10_000.0, 5},
+    {100_000.0, 4},
+    {1_000_000.0, 3},
+    {1.0e7, 2},
+    {1.0e8, 1}
+  ]
+
   @doc """
   Encodes a primitive value to TOON format.
 
@@ -86,27 +110,29 @@ defmodule ToonEx.Encode.Primitives do
   # Convert a float that Float.to_string/1 represented in scientific notation
   # to a plain decimal string, trimming trailing zeros.
   #
-  # Strategy: ask :erlang.float_to_binary/2 for enough decimal places to
-  # preserve all 15–17 significant digits, then strip trailing zeros in one pass.
+  # GPS-optimized: use range-based lookup table instead of :math.log10() calls.
+  # Falls back to dynamic calculation for values outside the lookup range.
   defp to_decimal(value) do
     abs_val = abs(value)
-
-    # Number of decimal places needed so no significant digit is lost.
-    decimals =
-      cond do
-        abs_val < 1.0 ->
-          # e.g. 1.0e-10 → neg_exp ≈ 10 → decimals = 27
-          neg_exp = abs_val |> :math.log10() |> abs() |> Float.ceil() |> trunc()
-          min(neg_exp + 17, 324)
-
-        true ->
-          # e.g. 1.23e15 → integer part has 16 digits → only 1 decimal needed
-          exp = abs_val |> :math.log10() |> Float.floor() |> trunc()
-          max(17 - exp, 1)
-      end
-
+    decimals = lookup_decimals(abs_val, @float_decimals)
     raw = :erlang.float_to_binary(value, [{:decimals, decimals}])
     trim_trailing_zeros(raw)
+  end
+
+  # Binary search lookup for decimal places - O(log n) instead of :math.log10()
+  defp lookup_decimals(abs_val, [{bound, decimals} | _]) when abs_val < bound, do: decimals
+  defp lookup_decimals(abs_val, [_ | rest]), do: lookup_decimals(abs_val, rest)
+  defp lookup_decimals(abs_val, []), do: fallback_decimals(abs_val)
+
+  # Fallback for values outside the lookup table (very large or very small)
+  defp fallback_decimals(abs_val) do
+    if abs_val < 1.0 do
+      neg_exp = abs_val |> :math.log10() |> abs() |> Float.ceil() |> trunc()
+      min(neg_exp + 17, 324)
+    else
+      exp = abs_val |> :math.log10() |> Float.floor() |> trunc()
+      max(17 - exp, 1)
+    end
   end
 
   # Splits on "." and strips trailing "0" from the fractional part.

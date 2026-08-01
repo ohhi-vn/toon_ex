@@ -28,6 +28,15 @@ defmodule ToonEx.Decode.Options do
     ]
   ]
 
+  @schema_keys MapSet.new(Keyword.keys(@options_schema))
+
+  @default_validated %{
+    keys: :strings,
+    strict: true,
+    indent_size: 2,
+    expand_paths: :off
+  }
+
   @doc """
   Returns the options schema.
   """
@@ -49,8 +58,10 @@ defmodule ToonEx.Decode.Options do
       true
   """
   @spec validate(keyword()) :: {:ok, map()} | {:error, Validator.t()}
+  def validate([]), do: {:ok, @default_validated}
+
   def validate(opts) when is_list(opts) do
-    case Validator.validate(opts, @options_schema) do
+    case Validator.validate(opts, @options_schema, @schema_keys) do
       {:ok, validated} -> {:ok, Map.new(validated)}
       {:error, _} = error -> error
     end
@@ -60,6 +71,8 @@ defmodule ToonEx.Decode.Options do
   Validates and normalizes decoding options, raising on error.
   """
   @spec validate!(keyword()) :: map()
+  def validate!([]), do: @default_validated
+
   def validate!(opts) when is_list(opts) do
     case validate(opts) do
       {:ok, validated} -> validated

@@ -6,7 +6,7 @@ defmodule ToonEx.Encode.Arrays do
   - List: for mixed or non-uniform arrays
   """
 
-  alias ToonEx.Encode.{Primitives, Strings, Objects}
+  alias ToonEx.Encode.{Objects, Primitives, Strings}
   alias ToonEx.Utils
 
   # Performance: Module attributes are compile-time constants with zero runtime overhead.
@@ -27,8 +27,6 @@ defmodule ToonEx.Encode.Arrays do
 
   # Performance: Inline hot functions to reduce function call overhead
   @compile {:inline,
-            do_is_primitive?: 1,
-            do_all_values_primitive?: 1,
             format_length_marker: 2,
             apply_marker: 3,
             build_primitive_line: 3,
@@ -56,8 +54,8 @@ defmodule ToonEx.Encode.Arrays do
   """
   @spec encode(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode(key, list, depth, opts) when is_list(list) do
-    # Single-pass array type detection - replaces 6 separate traversals
-    case do_detect_array_type(list, {true, true, true, nil, 0, false}) do
+    # Single-pass array type detection - delegates to Utils
+    case Utils.detect_array_type(list) do
       {:primitive, length} ->
         if length == 0 do
           encode_empty(key, opts.length_marker)
@@ -73,72 +71,6 @@ defmodule ToonEx.Encode.Arrays do
     end
   end
 
-  # Single-pass array type detection
-  # State: {all_primitives, all_maps, all_primitive_values, keys, count, count_only}
-  # When count_only is true, we just count remaining elements without type checking
-  defp do_detect_array_type([], {false, true, true, keys, count, _count_only})
-       when is_list(keys) and keys != [],
-       do: {:tabular, count, keys}
-
-  defp do_detect_array_type([], {true, _, _, _, count, _count_only}),
-    do: {:primitive, count}
-
-  defp do_detect_array_type([], {_, _, _, _, count, _count_only}),
-    do: {:list, count}
-
-  # Count-only mode: just count remaining elements (merged from do_count_remaining)
-  defp do_detect_array_type([_ | t], {_, _, _, _, count, true}) do
-    do_detect_array_type(t, {false, false, false, nil, count + 1, true})
-  end
-
-  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count, false}) do
-    new_count = count + 1
-
-    cond do
-      # Early exit: already determined as list - switch to count-only mode
-      (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
-        do_detect_array_type(t, {false, false, false, nil, new_count, true})
-
-      # Primitive element - makes it not all-maps
-      is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h) ->
-        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count, false})
-
-      # Map element
-      is_map(h) ->
-        h_keys = Map.keys(h) |> Enum.sort()
-        h_all_prim = do_all_values_primitive?(h)
-
-        new_keys =
-          if keys do
-            if h_keys == keys, do: keys, else: nil
-          else
-            h_keys
-          end
-
-        if not h_all_prim do
-          do_detect_array_type(t, {false, false, false, nil, new_count, true})
-        else
-          do_detect_array_type(
-            t,
-            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count, false}
-          )
-        end
-
-      # Other element -> list
-      true ->
-        do_detect_array_type(t, {false, false, false, nil, new_count, true})
-    end
-  end
-
-  defp do_all_values_primitive?(map) do
-    :maps.fold(fn _k, v, acc -> acc and do_is_primitive?(v) end, true, map)
-  end
-
-  defp do_is_primitive?(v) when is_nil(v) or is_boolean(v) or is_number(v) or is_binary(v),
-    do: true
-
-  defp do_is_primitive?(_), do: false
-
   # Encode tabular array with pre-computed keys from single-pass detection
   defp encode_tabular_with_keys(key, list, keys, _depth, opts) do
     length_marker = format_length_marker(length(list), opts.length_marker)
@@ -148,7 +80,8 @@ defmodule ToonEx.Encode.Arrays do
     final_keys =
       case Map.get(opts, :key_order) do
         key_order when is_list(key_order) and key_order != [] ->
-          ordered = Enum.filter(key_order, &(&1 in keys))
+          key_set = MapSet.new(keys)
+          ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
           if length(ordered) == length(keys), do: ordered, else: keys
 
         _ ->
@@ -258,7 +191,8 @@ defmodule ToonEx.Encode.Arrays do
           key_order = Map.get(opts, :key_order)
 
           if is_list(key_order) and not Enum.empty?(key_order) do
-            ordered = Enum.filter(key_order, &(&1 in map_keys))
+            key_set = MapSet.new(map_keys)
+            ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
             if length(ordered) == length(map_keys), do: ordered, else: Enum.sort(map_keys)
           else
             Enum.sort(map_keys)
@@ -316,10 +250,12 @@ defmodule ToonEx.Encode.Arrays do
 
   defp format_length_marker(length, nil), do: Integer.to_string(length)
 
-  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
-  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
-  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
-  # everything in one pass, so nested iolists are free.
+  # Performance: Return iolist instead of binary concatenation
+  # (marker <> Integer.to_string(length)). The iolist
+  # [marker, Integer.to_string(length)] avoids allocating a new binary
+  # and copying both strings into it. The final IO.iodata_to_binary at
+  # the top-level encoder flattens everything in one pass, so nested
+  # iolists are free.
   defp format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @compile {:inline, format_delimiter_marker: 1}
@@ -549,11 +485,12 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   # Handle complex arrays (tabular, list, or nested)
-  # Performance: Use single-pass detection instead of re-traversing with tabular_array?/list_array?
+  # Performance: Use single-pass detection instead of re-traversing
+  # with tabular_array?/list_array?
   defp encode_complex_array_value(key, v, needs_marker, opts) do
     depth = 0
 
-    case do_detect_array_type(v, {false, true, true, nil, 0, false}) do
+    case Utils.detect_array_type(v) do
       {:tabular, _length, keys} ->
         encode_tabular_array_value_with_keys(key, v, keys, needs_marker, depth, opts)
 

@@ -6,8 +6,8 @@ defmodule ToonEx.Encode do
   encoders based on the type of value being encoded.
   """
 
+  alias ToonEx.Encode.{Arrays, Objects, Options, Primitives, Strings}
   alias ToonEx.{EncodeError, Utils}
-  alias ToonEx.Encode.{Objects, Options, Arrays, Primitives, Strings}
 
   # Performance: Direct binary constants to eliminate function call overhead
   @colon ":"
@@ -50,15 +50,16 @@ defmodule ToonEx.Encode do
   # Jason-style: handle Fragment at the top level to avoid normalize converting
   # pre-encoded iodata into a plain binary string (which would then get quoted).
   def encode(%ToonEx.Fragment{} = fragment, opts) do
-    with {:ok, validated_opts} <- Options.validate(opts) do
-      try do
-        iodata = fragment.encode.(validated_opts)
-        {:ok, IO.iodata_to_binary(iodata)}
-      rescue
-        e in EncodeError -> {:error, e}
-        e -> {:error, EncodeError.exception(message: Exception.message(e), value: fragment)}
-      end
-    else
+    case Options.validate(opts) do
+      {:ok, validated_opts} ->
+        try do
+          iodata = fragment.encode.(validated_opts)
+          {:ok, IO.iodata_to_binary(iodata)}
+        rescue
+          e in EncodeError -> {:error, e}
+          e -> {:error, EncodeError.exception(message: Exception.message(e), value: fragment)}
+        end
+
       {:error, error} ->
         {:error,
          EncodeError.exception(
@@ -134,8 +135,8 @@ defmodule ToonEx.Encode do
     do_encode(normalized, 0, validated_opts)
     |> IO.iodata_to_binary()
   rescue
-    e in EncodeError -> raise e
-    e -> raise EncodeError.exception(message: Exception.message(e), value: data)
+    e in EncodeError -> reraise e, __STACKTRACE__
+    e -> raise EncodeError, message: Exception.message(e), value: data
   end
 
   # Private functions
@@ -195,7 +196,7 @@ defmodule ToonEx.Encode do
 
   defp encode_root_array(data, depth, opts) do
     # Single-pass detection: determines array type while computing length
-    case do_detect_array_type(data, {true, true, true, nil, 0, false}) do
+    case Utils.detect_array_type(data) do
       {:primitive, length} ->
         length_marker = format_length_marker(length, opts.length_marker)
         delimiter_marker = format_delimiter_marker(opts.delimiter)
@@ -219,75 +220,6 @@ defmodule ToonEx.Encode do
     end
   end
 
-  # Single-pass array type detection
-  # State: {all_primitives, all_maps, all_primitive_values, keys, count, count_only}
-  # When count_only is true, we just count remaining elements without type checking
-  defp do_detect_array_type([], {false, true, true, keys, count, _count_only})
-       when is_list(keys) and keys != [],
-       do: {:tabular, count, keys}
-
-  # Primitive: all primitives (no maps)
-  defp do_detect_array_type([], {true, _, _, _, count, _count_only}),
-    do: {:primitive, count}
-
-  # List: everything else (mixed, non-uniform maps, or maps with non-primitive values)
-  defp do_detect_array_type([], {_, _, _, _, count, _count_only}),
-    do: {:list, count}
-
-  # Count-only mode: just count remaining elements (merged from do_count_remaining)
-  defp do_detect_array_type([_ | t], {_, _, _, _, count, true}) do
-    do_detect_array_type(t, {false, false, false, nil, count + 1, true})
-  end
-
-  defp do_detect_array_type([h | t], {all_prim, all_maps, all_prim_vals, keys, count, false}) do
-    new_count = count + 1
-
-    cond do
-      # Early exit: already determined as list - switch to count-only mode
-      (not all_prim and not all_maps) or (all_maps and not all_prim_vals) ->
-        do_detect_array_type(t, {false, false, false, nil, new_count, true})
-
-      # Primitive element - makes it not all-maps
-      is_nil(h) or is_boolean(h) or is_number(h) or is_binary(h) ->
-        do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count, false})
-
-      # Map element
-      is_map(h) ->
-        h_keys = Map.keys(h) |> Enum.sort()
-        h_all_prim = do_all_values_primitive?(h)
-
-        new_keys =
-          if keys do
-            if h_keys == keys, do: keys, else: nil
-          else
-            h_keys
-          end
-
-        # If values aren't all primitive, we can early-exit to list
-        if not h_all_prim do
-          do_detect_array_type(t, {false, false, false, nil, new_count, true})
-        else
-          do_detect_array_type(
-            t,
-            {false, all_maps, all_prim_vals and h_all_prim, new_keys, new_count, false}
-          )
-        end
-
-      # Other element -> list
-      true ->
-        do_detect_array_type(t, {false, false, false, nil, new_count, true})
-    end
-  end
-
-  defp do_all_values_primitive?(map) do
-    :maps.fold(fn _k, v, acc -> acc and do_is_primitive?(v) end, true, map)
-  end
-
-  defp do_is_primitive?(v) when is_nil(v) or is_boolean(v) or is_number(v) or is_binary(v),
-    do: true
-
-  defp do_is_primitive?(_), do: false
-
   # Encode root tabular array
   # Performance: Accepts pre-computed keys from single-pass detection
   # Uses iolist construction instead of binary concatenation for O(1) appends.
@@ -297,7 +229,8 @@ defmodule ToonEx.Encode do
     final_keys =
       case Map.get(opts, :key_order) do
         key_order when is_list(key_order) and key_order != [] ->
-          ordered = Enum.filter(key_order, &(&1 in keys))
+          key_set = MapSet.new(keys)
+          ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
           if length(ordered) == length(keys), do: ordered, else: keys
 
         _ ->
@@ -338,12 +271,27 @@ defmodule ToonEx.Encode do
   defp encode_root_list_array(data, length_marker, delimiter_marker, _depth, opts) do
     header = [@open_bracket, length_marker, delimiter_marker, @close_bracket, @colon]
 
-    items =
-      Enum.flat_map(data, fn item ->
-        encode_root_list_item(item, 0, opts)
-      end)
+    # Encode all items first (each item becomes a list of lines)
+    items = do_encode_root_list_items(data, opts, [])
 
-    [header | Enum.flat_map(items, fn item -> ["\n", [opts.indent_string, item]] end)]
+    # Prepend newline and indent to each line of each item
+    [header | do_prepend_indent_to_lines(items, opts.indent_string, [])]
+  end
+
+  # Tail-recursive helper for encoding list items
+  defp do_encode_root_list_items([], _opts, acc), do: :lists.reverse(acc)
+
+  defp do_encode_root_list_items([item | rest], opts, acc) do
+    encoded = encode_root_list_item(item, 0, opts)
+    do_encode_root_list_items(rest, opts, [encoded | acc])
+  end
+
+  # Prepend indent to each line of each item (handles nested structures)
+  defp do_prepend_indent_to_lines([], _indent, acc), do: :lists.reverse(acc)
+
+  defp do_prepend_indent_to_lines([item_lines | rest], indent, acc) do
+    indented = Enum.map(item_lines, fn line -> ["\n", [indent, line]] end)
+    do_prepend_indent_to_lines(rest, indent, [indented | acc])
   end
 
   # Encode a single root list item
@@ -505,7 +453,8 @@ defmodule ToonEx.Encode do
                   do: [@list_item_prefix, header],
                   else: [opts.indent_string, header]
 
-              # Both tabular and list arrays need 2 indents when nested inside a list item's map entry
+              # Both tabular and list arrays need 2 indents when nested
+              # inside a list item's map entry
               indented_data =
                 Enum.map(data_lines, &[opts.indent_string, opts.indent_string, &1])
 
@@ -524,10 +473,12 @@ defmodule ToonEx.Encode do
   # Format length marker
   defp format_length_marker(length, nil), do: Integer.to_string(length)
 
-  # Performance: Return iolist instead of binary concatenation (marker <> Integer.to_string(length)).
-  # The iolist [marker, Integer.to_string(length)] avoids allocating a new binary and copying
-  # both strings into it. The final IO.iodata_to_binary at the top-level encoder flattens
-  # everything in one pass, so nested iolists are free.
+  # Performance: Return iolist instead of binary concatenation
+  # (marker <> Integer.to_string(length)). The iolist
+  # [marker, Integer.to_string(length)] avoids allocating a new binary
+  # and copying both strings into it. The final IO.iodata_to_binary at
+  # the top-level encoder flattens everything in one pass, so nested
+  # iolists are free.
   defp format_length_marker(length, marker), do: [marker, Integer.to_string(length)]
 
   @compile {:inline, format_delimiter_marker: 1}

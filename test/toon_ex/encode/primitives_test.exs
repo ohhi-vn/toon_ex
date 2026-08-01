@@ -106,4 +106,28 @@ defmodule ToonEx.Encode.PrimitivesTest do
       assert String.contains?(result, "123")
     end
   end
+
+  describe "fallback_decimals coverage" do
+    test "encodes very large float using fallback_decimals" do
+      # This triggers the fallback_decimals path for values >= 1e8
+      result = to_binary(Primitives.encode(1.23e100, ","))
+      refute String.contains?(result, "e")
+      refute String.contains?(result, "E")
+      assert String.contains?(result, "123")
+    end
+
+    test "encodes very small float that underflows to zero" do
+      # Values smaller than ~5e-324 underflow to 0.0
+      result = to_binary(Primitives.encode(1.23e-324, ","))
+      assert result == "0"
+    end
+  end
+
+  # Note: The following code paths in format_float/1 are defensive and cannot be
+  # triggered in Erlang/Elixir because the BEAM doesn't allow creating
+  # infinity or NaN float values at runtime (they throw ArithmeticError):
+  # - value > 1.0e308 or value < -1.0e308 -> null (overflow check)
+  # - value != value -> null (NaN check)
+  # These branches remain in the code for defensive completeness in case
+  # values are passed from external sources (NIFs, etc.)
 end
