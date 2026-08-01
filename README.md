@@ -12,10 +12,11 @@ TOON is a compact, human-readable data format optimized for LLM token efficiency
 
 - 🎯 **Token Efficient**: 30-60% fewer tokens for LLMs than JSON
 - 📖 **Human Readable**: Indentation-based structure like YAML
-- ✅ **Spec Compliant**: Tested against official TOON v3.0 specification
-- 🔌 **Phoenix Channels**: Built-in serializer support
+- ✅ **Spec Compliant**: Tested against official TOON v4.1.0 specification
+- 🔌 **Phoenix Channels**: Built-in serializer with binary frame support
 - 🛠️ **JSON Converter**: Bidirectional JSON ↔ TOON conversion
 - 🔧 **Extensible**: Custom encoding via `ToonEx.Encoder` protocol
+- ⚡ **High Performance**: Zero-copy iodata encoding, binary pattern-matching decoder
 
 ## Installation
 
@@ -69,6 +70,11 @@ Or (if not using Phoenix for LiveView/Restful Apis)
 config :phoenix, :json_library, ToonEx
 ```
 
+The serializer supports both text and binary frame encoding for Phoenix Channels.
+Binary frames use a compact binary protocol for `Phoenix.Socket.Message`, `Phoenix.Socket.Broadcast`,
+and `Phoenix.Socket.Reply` structs, reducing payload size for high-frequency channels.
+Use `fastlane!/1` for binary-encoded broadcasts and `encode!/1` for binary-encoded replies.
+
 See `ToonEx.Phoenix.Serializer` for details.
 
 ## API Reference
@@ -91,7 +97,7 @@ See `ToonEx.Phoenix.Serializer` for details.
 
 ## Specification
 
-This implementation follows [TOON Specification v3.0](https://github.com/toon-format/spec/blob/main/SPEC.md) and is tested against official fixtures.
+This implementation follows [TOON Specification v4.1.0](https://github.com/toon-format/spec/blob/main/SPEC.md) and is tested against official fixtures.
 
 ## Testing
 

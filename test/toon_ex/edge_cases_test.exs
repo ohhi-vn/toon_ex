@@ -255,4 +255,99 @@ defmodule ToonEx.EdgeCasesTest do
       end
     end
   end
+
+  # ── coverage: decoder edge cases ────────────────────────────────────────────
+
+  describe "decoder coverage" do
+    test "nested object followed by sibling exits scope" do
+      assert {:ok, result} = ToonEx.decode("parent:\n  child: v\nsibling: x")
+      assert result == %{"parent" => %{"child" => "v"}, "sibling" => "x"}
+    end
+
+test "atoms! key mode" do
+      _ = String.to_atom("id")
+      _ = String.to_atom("name")
+      assert {:ok, result} = ToonEx.decode("id: 1\nname: Alice", keys: :atoms!)
+      assert result == %{id: 1, name: "Alice"}
+    end
+
+    test "blank lines inside tabular array (non-strict)" do
+      assert {:ok, result} =
+               ToonEx.decode("rows[2]{a,b}:\n  1,2\n\n  3,4", strict: false)
+
+      assert result == %{"rows" => [%{"a" => 1, "b" => 2}, %{"a" => 3, "b" => 4}]}
+    end
+
+    test "blank lines inside list array (non-strict)" do
+      assert {:ok, result} =
+               ToonEx.decode("items[2]:\n  - a: 1\n\n  - b: 2", strict: false)
+
+      assert result == %{"items" => [%{"a" => 1}, %{"b" => 2}]}
+    end
+
+    test "empty nested object" do
+      assert {:ok, result} = ToonEx.decode("parent:\nchild: x")
+      assert result == %{"child" => "x", "parent" => %{}}
+    end
+
+    test "inline array with empty values" do
+      assert {:ok, result} = ToonEx.decode("x[3]: ")
+      assert result == %{"x" => []}
+    end
+
+    test "string starting with underscore" do
+      assert {:ok, result} = ToonEx.decode("x: _private")
+      assert result == %{"x" => "_private"}
+    end
+
+    test "line with delimiter before colon" do
+      assert {:ok, result} = ToonEx.decode("items[2]{a,b}:\n  1,2:3\n  4,5:6")
+      assert result == %{"items" => [%{"a" => 1, "b" => "2:3"}, %{"a" => 4, "b" => "5:6"}]}
+    end
+
+    test "unicode escape in quoted string" do
+      assert {:ok, result} = ToonEx.decode(~S(x: "hello\u0041world"))
+      assert result == %{"x" => "helloAworld"}
+    end
+
+    test "escaped quote inside field name" do
+      assert {:ok, result} = ToonEx.decode(~S(items[1]{"field\"name",other}:) <> "\n  1,2")
+      assert result == %{"items" => [%{"field\"name" => 1, "other" => 2}]}
+    end
+
+    test "nested list array count mismatch errors in strict mode" do
+      assert_raise ToonEx.DecodeError, fn ->
+        ToonEx.decode!("items[3]:\n  - a: 1\n  - b: 2", strict: true)
+      end
+    end
+
+    test "empty keyed header without fields" do
+      assert {:ok, result} = ToonEx.decode("items[2]:\n  - a: 1\n  - b: 2")
+      assert result == %{"items" => [%{"a" => 1}, %{"b" => 2}]}
+    end
+
+    test "dotted key path with uppercase and underscore" do
+      assert {:ok, result} = ToonEx.decode("User.name: Alice\n_Private.key: x")
+      assert result == %{"User.name" => "Alice", "_Private.key" => "x"}
+    end
+
+    test "value with only digits parsed as integer" do
+      assert {:ok, result} = ToonEx.decode("x: 42")
+      assert result == %{"x" => 42}
+    end
+
+    test "blank lines between sibling entries (non-strict)" do
+      assert {:ok, result} =
+               ToonEx.decode("a: 1\n\nb: 2", strict: false)
+
+      assert result == %{"a" => 1, "b" => 2}
+    end
+
+    test "tab character as auto-detected delimiter" do
+      assert {:ok, result} =
+               ToonEx.decode("rows[2]{a,b}:\n\t1,2\n\t3,4", strict: false)
+
+      assert result == %{"rows" => [%{"a" => 1, "b" => 2}, %{"a" => 3, "b" => 4}]}
+    end
+  end
 end

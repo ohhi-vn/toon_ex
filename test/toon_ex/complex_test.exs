@@ -15,7 +15,6 @@ defmodule ToonEx.ComplexTest do
   use ExUnit.Case, async: true
 
   alias ToonEx.Fixtures.Complex
-  alias ToonEx.Fixtures.Complex.{Address, Budget, Department}
 
   # Build once per test run (structs are immutable)
   @org Complex.sample()
@@ -66,7 +65,7 @@ defmodule ToonEx.ComplexTest do
     end
 
     test "unicode name survives normalisation" do
-      bob = @org.departments |> hd() |> Map.get(:employees) |> hd()
+      bob = @org.departments |> hd() |> Map.get(:employees) |> Enum.at(0)
       norm = ToonEx.Utils.normalize(bob)
       assert norm["name"] == "Bob Müller"
     end
@@ -173,11 +172,9 @@ defmodule ToonEx.ComplexTest do
       assert toon =~ "employees[0]:"
     end
 
-    test "metadata slack_channel value is present and unquoted", %{toon: toon} do
-      # '#' is not a TOON structure character, so "#engineering" is encoded
-      # without quotes.  The decoder reads it back as the string "#engineering".
-      assert toon =~ "slack_channel: #engineering"
-      refute toon =~ ~s(slack_channel: "#engineering")
+    test "metadata slack_channel value is present and quoted", %{toon: toon} do
+      # '#' is a TOON structure character that requires quoting per spec §7.2
+      assert toon =~ ~s(slack_channel: "#engineering")
     end
   end
 

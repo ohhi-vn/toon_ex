@@ -28,6 +28,8 @@ defmodule ToonEx.Encode do
     * `:indent` - Number of spaces for indentation (default: 2)
     * `:delimiter` - Delimiter for array values: "," | "\\t" | "|" (default: ",")
     * `:length_marker` - Prefix for array length marker (default: nil)
+    * `:key_folding` - Key folding mode: `:off` | `:safe` (default: `:off`)
+    * `:flatten_depth` - Max depth for key folding: non-negative integer or `:infinity` (default: `:infinity`)
 
   ## Examples
 

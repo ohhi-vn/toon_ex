@@ -66,7 +66,7 @@ defmodule ToonEx.Types do
           {:indent, pos_integer()}
           | {:delimiter, delimiter()}
           | {:length_marker, String.t() | nil}
-          | {:key_folding, String.t()}
+          | {:key_folding, :off | :safe}
           | {:flatten_depth, non_neg_integer() | :infinity}
 
   @typedoc """
@@ -102,7 +102,7 @@ defmodule ToonEx.Types do
           {:keys, :strings | :atoms | :atoms!}
           | {:strict, boolean()}
           | {:indent_size, pos_integer()}
-          | {:expand_paths, String.t()}
+          | {:expand_paths, :off | :safe}
 
   @typedoc """
   Indentation depth level.

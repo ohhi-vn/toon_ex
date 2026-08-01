@@ -23,7 +23,10 @@ defmodule ToonEx.Fragment do
 
   defstruct [:encode, :encode_key]
 
-  @type t :: %__MODULE__{encode: (keyword() -> iodata()), encode_key: (keyword() -> iodata())}
+  @type t :: %__MODULE__{
+          encode: (keyword() -> iodata()),
+          encode_key: (keyword() -> iodata()) | nil
+        }
 
   @doc """
   Creates a new fragment from pre-encoded iodata or an encoding function.

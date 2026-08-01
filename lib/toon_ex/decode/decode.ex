@@ -5,7 +5,7 @@ defmodule ToonEx.Decode do
   Parses TOON format strings and converts them to Elixir data structures.
   """
 
-  alias ToonEx.Decode.{Options, Fast}
+  alias ToonEx.Decode.{Options, Fast, StructuralParser}
   alias ToonEx.DecodeError
 
   @typedoc "Decoded TOON value"
@@ -17,6 +17,9 @@ defmodule ToonEx.Decode do
   ## Options
 
     * `:keys` - How to decode map keys: `:strings` | `:atoms` | `:atoms!` (default: `:strings`)
+    * `:strict` - Enable strict mode validation (default: `true`)
+    * `:indent_size` - Expected indentation size in spaces (default: 2)
+    * `:expand_paths` - Path expansion mode: `:off` | `:safe` (default: `:off`)
 
   ## Examples
 
@@ -37,8 +40,17 @@ defmodule ToonEx.Decode do
     case Options.validate(opts) do
       {:ok, validated_opts} ->
         try do
-          decoded = do_decode(string, validated_opts)
-          {:ok, decoded}
+          # Use StructuralParser for strict mode with custom indent_size
+          # as it has the full depth jump validation
+          if validated_opts.strict && validated_opts.indent_size != 2 do
+            case StructuralParser.parse(string, validated_opts) do
+              {:ok, {result, _metadata}} -> {:ok, result}
+              {:error, error} -> {:error, error}
+            end
+          else
+            decoded = do_decode(string, validated_opts)
+            {:ok, decoded}
+          end
         rescue
           e in DecodeError ->
             {:error, e}

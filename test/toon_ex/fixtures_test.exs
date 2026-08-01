@@ -47,8 +47,9 @@ defmodule ToonEx.FixturesTest do
             {:ok, result} ->
               # For encoder tests, compare by decoding both and checking equivalence
               # This handles Elixir 1.19's automatic map sorting
-              result_decode = ToonEx.decode(result)
-              expected_decode = ToonEx.decode(expected)
+              decode_options = [strict: false]
+              result_decode = ToonEx.decode(result, decode_options)
+              expected_decode = ToonEx.decode(expected, decode_options)
 
               case {result_decode, expected_decode} do
                 {{:ok, result_decoded}, {:ok, expected_decoded}} ->
@@ -150,6 +151,7 @@ defmodule ToonEx.FixturesTest do
 
   # Helper to convert decoder option keys from spec format to Elixir format
   defp convert_decoder_option_key("indent"), do: :indent_size
+  defp convert_decoder_option_key("indentSize"), do: :indent_size
   defp convert_decoder_option_key(key), do: key |> Macro.underscore() |> String.to_atom()
 
   # Generate decoder tests

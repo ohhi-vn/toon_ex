@@ -148,7 +148,7 @@ defmodule ToonEx.Decode.MapsTest do
     end
 
     test "blank line inside nested block raises in strict mode" do
-      toon = "parent:\n  a: 1\n\n  b: 2"
+      _toon = "parent:\n  a: 1\n\n  b: 2"
       # Strict mode forbids blank lines inside arrays; objects are more lenient
       # but blank lines in tabular arrays must raise:
       toon_arr = "rows[2]{a,b}:\n  1,2\n\n  3,4"

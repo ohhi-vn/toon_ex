@@ -216,5 +216,77 @@ defmodule ToonEx.Decode.PrimitivesTest do
     test "quoted string preserving leading/trailing spaces" do
       assert {:ok, %{"s" => " padded "}} = ToonEx.decode(~s(s: " padded "))
     end
+
+    test "quoted string with escaped backslash" do
+      assert {:ok, %{"s" => "back\\slash"}} = ToonEx.decode(~S(s: "back\\slash"))
+    end
+
+    test "quoted string with unicode escape" do
+      assert {:ok, %{"s" => "helloAworld"}} = ToonEx.decode(~S(s: "hello\u0041world"))
+    end
+
+    test "quoted string with newline escape" do
+      assert {:ok, %{"s" => "line1\nline2"}} = ToonEx.decode(~S(s: "line1\nline2"))
+    end
+
+    test "quoted string with tab escape" do
+      assert {:ok, %{"s" => "col1\tcol2"}} = ToonEx.decode(~S(s: "col1\tcol2"))
+    end
+
+    test "quoted string with carriage return escape" do
+      assert {:ok, %{"s" => "line1\rline2"}} = ToonEx.decode(~S(s: "line1\rline2"))
+    end
+
+    test "quoted string with escaped quote" do
+      assert {:ok, %{"s" => "say \"hi\""}} = ToonEx.decode(~S(s: "say \"hi\""))
+    end
+
+    test "empty quoted string value" do
+      assert {:ok, %{"s" => ""}} = ToonEx.decode(~s(s: ""))
+    end
+  end
+
+  # ── float edge cases ─────────────────────────────────────────────────────────
+
+  describe "float edge cases" do
+    test "very small float" do
+      assert {:ok, %{"x" => 0.000001}} = ToonEx.decode("x: 0.000001")
+    end
+
+    test "very large float" do
+      assert {:ok, %{"x" => 10_000_000_000}} = ToonEx.decode("x: 10000000000.0")
+    end
+
+    test "negative float" do
+      assert {:ok, %{"x" => -3.14}} = ToonEx.decode("x: -3.14")
+    end
+
+    test "float with many decimal places" do
+      assert {:ok, %{"x" => 3.14159265358979}} = ToonEx.decode("x: 3.14159265358979")
+    end
+
+    test "zero float" do
+      assert {:ok, %{"x" => 0}} = ToonEx.decode("x: 0.0")
+    end
+  end
+
+  # ── integer edge cases ───────────────────────────────────────────────────────
+
+  describe "integer edge cases" do
+    test "zero" do
+      assert {:ok, %{"x" => 0}} = ToonEx.decode("x: 0")
+    end
+
+    test "negative integer" do
+      assert {:ok, %{"x" => -42}} = ToonEx.decode("x: -42")
+    end
+
+    test "very large integer" do
+      assert {:ok, %{"x" => 999_999_999_999}} = ToonEx.decode("x: 999999999999")
+    end
+
+    test "very small negative integer" do
+      assert {:ok, %{"x" => -999_999_999_999}} = ToonEx.decode("x: -999999999999")
+    end
   end
 end

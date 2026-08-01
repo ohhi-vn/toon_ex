@@ -21,6 +21,11 @@ defmodule ToonEx.Encode.Options do
       default: 2,
       doc: "Number of spaces for indentation"
     ],
+    indent_size: [
+      type: :non_neg_integer,
+      default: 2,
+      doc: "Indentation size in spaces (used by decoder)"
+    ],
     delimiter: [
       type: :string,
       default: ",",

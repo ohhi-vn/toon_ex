@@ -2,7 +2,9 @@
 
 ## Overview
 
-This document describes an optimized parser implementation that achieves **2-6x performance improvement** over the original parser through pre-classification and fast-path processing.
+This document describes the high-performance parser implementation that achieves
+significant performance improvement through pure binary pattern matching and
+zero-copy slicing.
 
 ## Performance Results
 
@@ -22,9 +24,10 @@ mix run benchmarks/parser_comparison.exs
 
 ## Optimization Strategy
 
-The optimized parser uses a two-phase approach:
+The optimized parser (`ToonEx.Decode.Fast.Decoder`) uses pure binary pattern
+matching with no external parsing libraries (NimbleParsec) in hot paths.
 
-### Phase 1: Pre-classification
+### Phase 1: Line Classification
 
 Each line is classified upfront into one of four types:
 - `:primitive` - Standalone values or key-value pairs
@@ -36,13 +39,31 @@ This eliminates redundant pattern matching during recursive descent.
 
 ### Phase 2: Recursive Descent with Fast Path
 
-The pre-classified lines are processed using recursive descent, with `:primitive` as the first (fastest) case in pattern matching.
+The pre-classified lines are processed using recursive descent, with `:primitive`
+as the first (fastest) case in pattern matching.
+
+### Zero-Copy Slicing
+
+The decoder uses `binary_part/3` to create sub-binary references instead of
+copying data. This is O(1) — it creates a reference to the original binary
+rather than allocating and copying.
+
+### Control Character Escaping
+
+String encoding uses a Jason-style chunk-based approach with `binary_part/3`
+to reference safe chunks of the original string without copying. Only escape
+sequences are newly allocated. Control characters (U+0000–U+001F, U+007F) are
+escaped as `\uXXXX`.
 
 ## Current Status
 
-The optimization approach has been validated with benchmarks showing 2-6x speedup. The original parser remains the default for maximum compatibility.
+The `Fast.Decoder` is the default and only decoder used by `ToonEx.Decode`.
+The original parser (`ToonEx.Decode.Parser`) and structural parsers
+(`ToonEx.Decode.StructuralParser`, `ToonEx.Decode.StructuralParserV2`) are
+retained for reference but are no longer used in production paths.
 
 ## Files
 
-- Benchmark script: `benchmarks/parser_comparison.exs`
+- Fast decoder: `lib/toon_ex/decode/fast/decoder.ex`
 - Original parser: `lib/toon_ex/decode/structural_parser.ex`
+- Benchmark script: `benchmarks/parser_comparison.exs`

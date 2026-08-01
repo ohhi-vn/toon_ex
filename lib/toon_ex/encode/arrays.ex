@@ -24,7 +24,6 @@ defmodule ToonEx.Encode.Arrays do
   # Performance: Pre-computed iodata fragments for hot paths.
   # Avoids rebuilding the same list structure on every call.
   @colon_space [":", " "]
-  @bracket_close_colon ["]", ":"]
 
   # Performance: Inline hot functions to reduce function call overhead
   @compile {:inline,
@@ -196,8 +195,9 @@ defmodule ToonEx.Encode.Arrays do
   @spec encode_empty(String.t(), String.t() | nil) ::
           nonempty_list(nonempty_list(binary() | nonempty_list(binary())))
   def encode_empty(key, length_marker \\ nil) do
-    marker = format_length_marker(0, length_marker)
-    [[Strings.encode_key(key), @open_bracket, marker, @bracket_close_colon]]
+    encoded_key = Strings.encode_key(key)
+    lm = format_length_marker(0, length_marker)
+    [[encoded_key, @open_bracket, lm, @close_bracket, @colon]]
   end
 
   @doc """
@@ -374,7 +374,7 @@ defmodule ToonEx.Encode.Arrays do
   # Extract helpers for array item types
   defp encode_empty_array_item(opts) do
     length_marker = format_length_marker(0, opts.length_marker)
-    [[@list_item_prefix, @open_bracket, length_marker, "]:"]]
+    [[@list_item_prefix, @open_bracket, length_marker, @close_bracket, @colon]]
   end
 
   defp encode_inline_array_item(item, opts) do
@@ -517,8 +517,8 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   defp build_empty_array_line(key, opts) do
-    length_marker = format_length_marker(0, opts.length_marker)
-    [Strings.encode_key(key), @open_bracket, length_marker, @bracket_close_colon]
+    lm = format_length_marker(0, opts.length_marker)
+    [Strings.encode_key(key), @open_bracket, lm, @close_bracket, @colon]
   end
 
   defp build_inline_array_line(key, values, opts) do

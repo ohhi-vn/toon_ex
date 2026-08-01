@@ -90,6 +90,14 @@ defmodule ToonEx do
 
   Returns `{:ok, toon_string}` on success, or `{:error, error}` on failure.
 
+  ## Options
+
+    * `:indent` - Number of spaces for indentation (default: 2)
+    * `:delimiter` - Delimiter for array values: "," | "\\t" | "|" (default: ",")
+    * `:length_marker` - Prefix for array length marker (default: nil)
+    * `:key_folding` - Key folding mode: `:off` | `:safe` (default: `:off`)
+    * `:flatten_depth` - Max depth for key folding: non-negative integer or `:infinity` (default: `:infinity`)
+
   ## Examples
 
       iex> ToonEx.encode(%{"name" => "Alice"})
@@ -132,6 +140,13 @@ defmodule ToonEx do
   Decodes TOON format string to Elixir data.
 
   Returns `{:ok, data}` on success, or `{:error, error}` on failure.
+
+  ## Options
+
+    * `:keys` - How to decode map keys: `:strings` | `:atoms` | `:atoms!` (default: `:strings`)
+    * `:strict` - Enable strict mode validation (default: `true`)
+    * `:indent_size` - Expected indentation size in spaces (default: 2)
+    * `:expand_paths` - Path expansion mode: `:off` | `:safe` (default: `:off`)
 
   ## Examples
 

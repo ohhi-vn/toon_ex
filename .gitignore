@@ -29,3 +29,4 @@ toon-*.tar
 .DS_Store
 .expert
 .dexter.db*
+mise.toml

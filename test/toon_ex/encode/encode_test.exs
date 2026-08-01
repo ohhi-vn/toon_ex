@@ -62,6 +62,70 @@ defmodule ToonEx.EncodeTest do
     test "empty string is quoted" do
       assert {:ok, ~s("")} = ToonEx.encode("")
     end
+
+    test "string with spaces is not quoted" do
+      assert {:ok, "hello world"} = ToonEx.encode("hello world")
+    end
+
+    test "string starting with # is quoted" do
+      assert {:ok, "\"#comment\""} = ToonEx.encode("#comment")
+    end
+
+    test "string starting with - is quoted" do
+      assert {:ok, "\"-value\""} = ToonEx.encode("-value")
+    end
+
+    test "string with colon is quoted" do
+      assert {:ok, "\"a:b\""} = ToonEx.encode("a:b")
+    end
+
+    test "string with comma is quoted" do
+      assert {:ok, "\"a,b\""} = ToonEx.encode("a,b")
+    end
+
+    test "string with newline is quoted" do
+      assert {:ok, "\"line1\\nline2\""} = ToonEx.encode("line1\nline2")
+    end
+
+    test "string with tab is quoted" do
+      assert {:ok, "\"col1\\tcol2\""} = ToonEx.encode("col1\tcol2")
+    end
+
+    test "string with backslash is quoted and escaped" do
+      assert {:ok, "\"back\\\\slash\""} = ToonEx.encode("back\\slash")
+    end
+
+    test "string with double quote is quoted and escaped" do
+      assert {:ok, "\"say \\\"hi\\\"\""} = ToonEx.encode(~s(say "hi"))
+    end
+
+    test "string with leading space is quoted" do
+      assert {:ok, "\" leading\""} = ToonEx.encode(" leading")
+    end
+
+    test "string with trailing space is quoted" do
+      assert {:ok, "\"trailing \""} = ToonEx.encode("trailing ")
+    end
+
+    test "string that looks like null is quoted" do
+      assert {:ok, "\"null\""} = ToonEx.encode("null")
+    end
+
+    test "string that looks like true is quoted" do
+      assert {:ok, "\"true\""} = ToonEx.encode("true")
+    end
+
+    test "string that looks like false is quoted" do
+      assert {:ok, "\"false\""} = ToonEx.encode("false")
+    end
+
+    test "string that looks like integer is quoted" do
+      assert {:ok, "\"42\""} = ToonEx.encode("42")
+    end
+
+    test "string that looks like float is quoted" do
+      assert {:ok, "\"3.14\""} = ToonEx.encode("3.14")
+    end
   end
 
   # ── map encoding ─────────────────────────────────────────────────────────────
@@ -415,6 +479,160 @@ defmodule ToonEx.EncodeTest do
 
     test "unknown option raises" do
       assert {:error, _} = ToonEx.encode(%{}, unknown_opt: true)
+    end
+  end
+
+  # ── fragment encoding ─────────────────────────────────────────────────────────
+
+  describe "fragment encoding" do
+    test "fragment with primitive value" do
+      fragment = ToonEx.Fragment.new("hello")
+      assert {:ok, "hello"} = ToonEx.encode(fragment)
+    end
+
+    test "fragment with map value" do
+      fragment = ToonEx.Fragment.new("a: 1")
+      assert {:ok, "a: 1"} = ToonEx.encode(fragment)
+    end
+
+    test "fragment with lazy encoding function" do
+      fragment = ToonEx.Fragment.new(fn _opts -> "name: Alice" end)
+      assert {:ok, "name: Alice"} = ToonEx.encode(fragment)
+    end
+  end
+
+  # ── complex nested encoding ───────────────────────────────────────────────────
+
+  describe "complex nested encoding" do
+    test "deeply nested map" do
+      data = %{"a" => %{"b" => %{"c" => %{"d" => "deep"}}}}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "a:"
+      assert result =~ "b:"
+      assert result =~ "c:"
+      assert result =~ "d: deep"
+    end
+
+    test "array of mixed types" do
+      data = [1, "two", true, nil, 3.14]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "[5]:"
+    end
+
+    test "map with special characters in values" do
+      data = %{"key" => "value with: colon and, comma"}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "key:"
+    end
+
+    test "nested arrays" do
+      data = [[1, 2], [3, 4]]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "["
+    end
+
+    test "empty map value" do
+      data = %{"empty" => %{}}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "empty:"
+    end
+
+    test "map with float values" do
+      data = %{"a" => 1.5, "b" => 2.0, "c" => -3.14}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "a: 1.5"
+      assert result =~ "b: 2"
+      assert result =~ "c: -3.14"
+    end
+
+    test "map with boolean values" do
+      data = %{"active" => true, "deleted" => false}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "active: true"
+      assert result =~ "deleted: false"
+    end
+
+    test "map with nil value" do
+      data = %{"missing" => nil}
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "missing: null"
+    end
+
+    test "list of primitives" do
+      data = ["a", "b", "c"]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "[3]:"
+    end
+
+    test "list of objects with same keys" do
+      data = [%{"id" => 1, "name" => "Alice"}, %{"id" => 2, "name" => "Bob"}]
+      {:ok, result} = ToonEx.encode(data)
+      assert result =~ "["
+    end
+  end
+
+  # ── error handling ─────────────────────────────────────────────────────────────
+
+  describe "error handling" do
+    test "encode with invalid options returns error" do
+      assert {:error, _} = ToonEx.encode(%{}, indent: -1)
+    end
+  end
+
+  # ── encode_to_iodata! ────────────────────────────────────────────────────────
+
+  describe "encode_to_iodata!" do
+    test "encodes map to iodata" do
+      result = ToonEx.encode_to_iodata!(%{"a" => 1})
+      assert IO.iodata_to_binary(result) == "a: 1"
+    end
+
+    test "encodes list to iodata" do
+      result = ToonEx.encode_to_iodata!([1, 2, 3])
+      assert IO.iodata_to_binary(result) == "[3]: 1,2,3"
+    end
+
+    test "encodes primitive to iodata" do
+      assert IO.iodata_to_binary(ToonEx.encode_to_iodata!("hello")) == "hello"
+    end
+
+    test "encodes fragment to iodata" do
+      fragment = ToonEx.Fragment.new("name: Alice")
+      assert IO.iodata_to_binary(ToonEx.encode_to_iodata!(fragment)) == "name: Alice"
+    end
+
+    test "raises on invalid options" do
+      assert_raise ToonEx.EncodeError, fn ->
+        ToonEx.encode_to_iodata!(%{}, indent: -1)
+      end
+    end
+  end
+
+  # ── tuple list encoding ──────────────────────────────────────────────────────
+
+  describe "tuple list encoding" do
+    test "encodes empty list as empty array" do
+      {:ok, result} = ToonEx.encode([])
+      assert result == "[0]:"
+    end
+  end
+
+  # ── fragment at top level ────────────────────────────────────────────────────
+
+  describe "fragment at top level" do
+    test "encodes fragment with valid options" do
+      fragment = ToonEx.Fragment.new("key: value")
+      assert {:ok, "key: value"} = ToonEx.encode(fragment)
+    end
+
+    test "encodes fragment with custom options" do
+      fragment = ToonEx.Fragment.new("key: value")
+      assert {:ok, "key: value"} = ToonEx.encode(fragment, indent: 4)
+    end
+
+    test "fragment with encoding error returns error" do
+      fragment = %ToonEx.Fragment{encode: fn _opts -> raise "encoding failed" end}
+      assert {:error, _} = ToonEx.encode(fragment)
     end
   end
 end

@@ -97,5 +97,84 @@ defmodule ToonEx.Encode.ArraysTest do
       assert IO.iodata_to_binary(header) == "items[1]:"
       assert Enum.map(item_lines, &IO.iodata_to_binary/1) == ["- [3]: 1,2,3"]
     end
+
+    test "encodes list with nested map" do
+      opts = %{delimiter: ",", length_marker: nil, indent_string: "  ", key_order: nil}
+      items = [%{"a" => 1}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.map(item_lines, &IO.iodata_to_binary/1) == ["- a: 1"]
+    end
+
+    test "encodes list with nested tabular array" do
+      opts = %{delimiter: ",", length_marker: nil, indent_string: "  ", key_order: nil}
+      items = [%{"a" => 1, "b" => 2}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.map(item_lines, &IO.iodata_to_binary/1) == ["- a: 1", "  b: 2"]
+    end
+
+    test "encodes list with nested list array" do
+      opts = %{delimiter: ",", length_marker: nil, indent_string: "  ", key_order: nil}
+      items = [%{"nested" => [1, 2]}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.at(item_lines, 0) |> IO.iodata_to_binary() =~ "nested"
+    end
+
+    test "encodes list with deeply nested structure" do
+      opts = %{delimiter: ",", length_marker: nil, indent: 2, indent_string: "  ", key_order: nil}
+      items = [%{"a" => %{"b" => %{"c" => "deep"}}}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.at(item_lines, 0) |> IO.iodata_to_binary() =~ "a:"
+    end
+
+    test "encodes list with empty map items" do
+      opts = %{delimiter: ",", length_marker: nil, indent: 2, indent_string: "  ", key_order: nil}
+      items = [%{}]
+
+      [header | _item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+    end
+
+    test "encodes list with null values in items" do
+      opts = %{delimiter: ",", length_marker: nil, indent: 2, indent_string: "  ", key_order: nil}
+      items = [%{"name" => nil}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.at(item_lines, 0) |> IO.iodata_to_binary() =~ "name: null"
+    end
+
+    test "encodes list with boolean values in items" do
+      opts = %{delimiter: ",", length_marker: nil, indent: 2, indent_string: "  ", key_order: nil}
+      items = [%{"active" => true, "deleted" => false}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.at(item_lines, 0) |> IO.iodata_to_binary() =~ "active: true"
+    end
+
+    test "encodes list with numeric values in items" do
+      opts = %{delimiter: ",", length_marker: nil, indent: 2, indent_string: "  ", key_order: nil}
+      items = [%{"count" => 42, "price" => 3.14}]
+
+      [header | item_lines] = Arrays.encode_list("items", items, 0, opts)
+
+      assert IO.iodata_to_binary(header) == "items[1]:"
+      assert Enum.at(item_lines, 0) |> IO.iodata_to_binary() =~ "count: 42"
+    end
   end
 end

@@ -347,4 +347,119 @@ defmodule ToonEx.Decode.ArraysTest do
       assert {:ok, ^expected} = ToonEx.decode(toon)
     end
   end
+
+  # ── edge cases for coverage ───────────────────────────────────────────────────
+
+  describe "array edge cases for coverage" do
+    test "root array with nested objects" do
+      toon = """
+      [2]:
+        - a: 1
+          b: 2
+        - c: 3
+          d: 4
+      """
+
+      assert {:ok, [%{"a" => 1, "b" => 2}, %{"c" => 3, "d" => 4}]} = ToonEx.decode(toon)
+    end
+
+    test "root array with mixed primitives and objects" do
+      toon = """
+      [3]:
+        - "hello"
+        - id: 42
+        - true
+      """
+
+      assert {:ok, ["hello", %{"id" => 42}, true]} = ToonEx.decode(toon)
+    end
+
+    test "root array with empty objects" do
+      toon = """
+      [2]:
+        -
+        -
+      """
+
+      assert {:ok, [%{}, %{}]} = ToonEx.decode(toon)
+    end
+
+    test "root array with nested array" do
+      toon = """
+      [2]:
+        - [2]: 1,2
+        - [2]: 3,4
+      """
+
+      assert {:ok, [[1, 2], [3, 4]]} = ToonEx.decode(toon)
+    end
+
+    test "root array with nested keyed array" do
+      toon = """
+      [1]:
+        - items[2]: a,b
+      """
+
+      assert {:ok, [%{"items" => ["a", "b"]}]} = ToonEx.decode(toon)
+    end
+
+    test "root array with nested tabular array" do
+      toon = """
+      [1]:
+        - data[2]{x,y}:
+            1,2
+            3,4
+      """
+
+      assert {:ok, [%{"data" => [%{"x" => 1, "y" => 2}, %{"x" => 3, "y" => 4}]}]} =
+               ToonEx.decode(toon)
+    end
+
+    test "root array with deeply nested structure" do
+      toon = """
+      [1]:
+        - outer:
+            inner:
+              deep: value
+      """
+
+      assert {:ok, [%{"outer" => %{"inner" => %{"deep" => "value"}}}]} =
+               ToonEx.decode(toon)
+    end
+
+    test "root array with sibling fields on list items" do
+      toon = """
+      [1]:
+        - matrix[2]:
+            - [2]: 1,2
+            - [2]: 3,4
+          name: grid
+      """
+
+      assert {:ok, [%{"matrix" => [[1, 2], [3, 4]], "name" => "grid"}]} =
+               ToonEx.decode(toon)
+    end
+
+    test "root array with blank lines between items (non-strict)" do
+      toon = """
+      [2]:
+        - a: 1
+
+        - b: 2
+      """
+
+      assert {:ok, [%{"a" => 1}, %{"b" => 2}]} = ToonEx.decode(toon, strict: false)
+    end
+
+    test "root array with blank lines between fields (non-strict)" do
+      toon = """
+      [1]:
+        - a: 1
+
+          b: 2
+      """
+
+      assert {:ok, [%{"a" => 1, "b" => 2}]} = ToonEx.decode(toon, strict: false)
+    end
+  end
 end

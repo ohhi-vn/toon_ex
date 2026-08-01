@@ -68,7 +68,8 @@ defmodule ToonEx.MixProject do
 
       # Code quality
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
-      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:ex_dna, "~> 1.5", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -109,11 +110,7 @@ defmodule ToonEx.MixProject do
         ],
         Decoding: [
           ToonEx.Decode,
-          ToonEx.Decode.Parser,
-          ToonEx.Decode.Primitives,
-          ToonEx.Decode.Objects,
-          ToonEx.Decode.Arrays,
-          ToonEx.Decode.Strings,
+          ToonEx.Decode.Fast.Decoder,
           ToonEx.Decode.Options
         ],
         Convertors: [
@@ -140,12 +137,16 @@ defmodule ToonEx.MixProject do
 
   defp aliases do
     [
-      quality: ["format", "credo --strict", "dialyzer"],
       "quality.ci": [
         "format --check-formatted",
         "credo --strict",
         "dialyzer"
-      ]
+      ],
+      precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"],
+      # Testing & Coverage
+      coveralls: ["test --cover", "coveralls.html"],
+      # Code Quality
+      quality: ["format --check-formatted", "credo --strict", "dialyzer"]
     ]
   end
 end

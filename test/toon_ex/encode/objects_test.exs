@@ -125,4 +125,177 @@ defmodule ToonEx.Encode.ObjectsTest do
       assert elem(first_pos, 0) < elem(last_pos, 0)
     end
   end
+
+  describe "encode_to_lines/3" do
+    test "encodes map to lines with proper indentation" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"a" => 1, "b" => 2}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "a: 1"
+      assert result =~ "b: 2"
+    end
+
+    test "encodes nested map with indentation" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"outer" => %{"inner" => "value"}}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "outer:"
+      assert result =~ "inner: value"
+    end
+
+    test "encodes map with array value" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"items" => [1, 2, 3]}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "items"
+    end
+
+    test "encodes map with empty map value" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"empty" => %{}}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "empty:"
+    end
+
+    test "encodes map with nil value" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"missing" => nil}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "missing: null"
+    end
+
+    test "encodes map with boolean values" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"active" => true, "deleted" => false}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "active: true"
+      assert result =~ "deleted: false"
+    end
+
+    test "encodes nested map with key_order as list at root" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: ["z", "a", "m"],
+        key_folding: :off
+      }
+
+      data = %{"a" => 1, "m" => 2, "z" => 3}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "z: 3"
+      assert result =~ "a: 1"
+      assert result =~ "m: 2"
+    end
+
+    test "key_order list with partial match falls back to sort" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: ["z"],
+        key_folding: :off
+      }
+
+      data = %{"a" => 1, "m" => 2, "z" => 3}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "a: 1"
+      assert result =~ "m: 2"
+      assert result =~ "z: 3"
+    end
+
+    test "encodes empty map as empty string" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      result = Objects.encode_to_lines(%{}, 0, opts) |> IO.iodata_to_binary()
+      assert result == ""
+    end
+
+    test "encodes nested empty map" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: nil,
+        key_folding: :off
+      }
+
+      data = %{"outer" => %{}}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "outer:"
+    end
+
+    test "encodes nested map with nested key_order" do
+      opts = %{
+        delimiter: ",",
+        length_marker: nil,
+        indent: 2,
+        indent_string: "  ",
+        key_order: %{[] => ["outer"], ["outer"] => ["y", "x"]},
+        key_folding: :off
+      }
+
+      data = %{"outer" => %{"x" => 1, "y" => 2}}
+      result = Objects.encode_to_lines(data, 0, opts) |> IO.iodata_to_binary()
+      assert result =~ "outer:"
+    end
+  end
 end

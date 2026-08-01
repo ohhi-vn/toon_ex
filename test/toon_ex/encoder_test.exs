@@ -1,3 +1,21 @@
+defmodule ToonEx.EncoderTest.DerivedNoOpts do
+  @moduledoc false
+  @derive ToonEx.Encoder
+  defstruct [:a, :b, :c]
+end
+
+defmodule ToonEx.EncoderTest.DerivedOnly do
+  @moduledoc false
+  @derive {ToonEx.Encoder, only: [:a]}
+  defstruct [:a, :b, :c]
+end
+
+defmodule ToonEx.EncoderTest.DerivedExcept do
+  @moduledoc false
+  @derive {ToonEx.Encoder, except: [:secret]}
+  defstruct [:a, :secret, :c]
+end
+
 defmodule ToonEx.EncoderTest do
   use ExUnit.Case, async: true
 
@@ -35,6 +53,26 @@ defmodule ToonEx.EncoderTest do
     test "encodes string containing delimiter as iodata with quotes" do
       result = ToonEx.Encoder.encode("a,b", delimiter: ",")
       assert IO.iodata_to_binary(result) == "\"a,b\""
+    end
+
+    test "encodes empty string" do
+      result = ToonEx.Encoder.encode("", [])
+      assert IO.iodata_to_binary(result) == "\"\""
+    end
+
+    test "encodes string with tab delimiter" do
+      # Tab in string triggers quoting because tab is a delimiter
+      result = ToonEx.Encoder.encode("hello\tworld", delimiter: "\t")
+      assert IO.iodata_to_binary(result) == "\"hello\\tworld\""
+    end
+
+    test "encodes string with pipe delimiter" do
+      result = ToonEx.Encoder.encode("hello|world", delimiter: "|")
+      assert IO.iodata_to_binary(result) == "\"hello|world\""
+    end
+
+    test "encodes string without delimiter does not quote" do
+      assert ToonEx.Encoder.encode("hello world", []) == "hello world"
     end
   end
 
@@ -74,6 +112,36 @@ defmodule ToonEx.EncoderTest do
       result = ToonEx.Encoder.encode([], [])
       assert result == "[0]:"
     end
+
+    test "encodes list with custom delimiter" do
+      result = ToonEx.Encoder.encode([1, 2, 3], delimiter: "\t")
+      assert result == "[3\t]: 1\t2\t3"
+    end
+
+    test "encodes list of strings" do
+      result = ToonEx.Encoder.encode(["a", "b", "c"], [])
+      assert result == "[3]: a,b,c"
+    end
+
+    test "encodes list of booleans" do
+      result = ToonEx.Encoder.encode([true, false, true], [])
+      assert result == "[3]: true,false,true"
+    end
+
+    test "encodes nested lists" do
+      result = ToonEx.Encoder.encode([1, [2, 3]], [])
+      assert result =~ "[2]: 2,3"
+    end
+
+    test "encodes list with length_marker" do
+      result = ToonEx.Encoder.encode([1, 2, 3], length_marker: "#")
+      assert result == "[#3]: 1,2,3"
+    end
+
+    test "encodes list with indent option" do
+      result = ToonEx.Encoder.encode([1, 2], indent: 4)
+      assert result == "[2]: 1,2"
+    end
   end
 
   describe "ToonEx.Encoder for Map" do
@@ -85,6 +153,41 @@ defmodule ToonEx.EncoderTest do
     test "encodes empty map" do
       result = ToonEx.Encoder.encode(%{}, [])
       assert result == ""
+    end
+
+    test "encodes map with string keys" do
+      result = ToonEx.Encoder.encode(%{"name" => "Bob"}, [])
+      assert result == "name: Bob"
+    end
+
+    test "encodes nested map" do
+      result = ToonEx.Encoder.encode(%{user: %{name: "Charlie"}}, [])
+      assert result =~ "name: Charlie"
+    end
+
+    test "encodes map with integer values" do
+      result = ToonEx.Encoder.encode(%{count: 42}, [])
+      assert result == "count: 42"
+    end
+
+    test "encodes map with boolean values" do
+      result = ToonEx.Encoder.encode(%{active: true}, [])
+      assert result == "active: true"
+    end
+
+    test "encodes map with nil value" do
+      result = ToonEx.Encoder.encode(%{missing: nil}, [])
+      assert result == "missing: null"
+    end
+
+    test "encodes map with float values" do
+      result = ToonEx.Encoder.encode(%{pi: 3.14}, [])
+      assert result == "pi: 3.14"
+    end
+
+    test "encodes map with list values" do
+      result = ToonEx.Encoder.encode(%{tags: ["a", "b"]}, [])
+      assert result =~ "tags[2]: a,b"
     end
   end
 
@@ -197,6 +300,61 @@ defmodule ToonEx.EncoderTest do
       result = ToonEx.encode!(data)
 
       assert result =~ "name: Charlie"
+    end
+  end
+
+  # ── Error handling ───────────────────────────────────────────────────────────
+
+  describe "error handling" do
+    test "encode/1 returns {:error, _} for struct without encoder" do
+      struct = %StructWithoutEncoder{value: 42}
+      assert {:error, _} = ToonEx.encode(struct)
+    end
+
+    test "encode!/1 raises for struct without encoder" do
+      struct = %StructWithoutEncoder{value: 42}
+
+      assert_raise ToonEx.EncodeError, fn ->
+        ToonEx.encode!(struct)
+      end
+    end
+  end
+
+  # ── Fragment encoding ────────────────────────────────────────────────────────
+
+  describe "Fragment encoding" do
+    test "encodes fragment through Encoder protocol" do
+      fragment = ToonEx.Fragment.new("name: Alice")
+      result = ToonEx.Encoder.encode(fragment, [])
+      assert IO.iodata_to_binary(result) == "name: Alice"
+    end
+
+    test "encodes fragment with custom delimiter" do
+      fragment = ToonEx.Fragment.new("a,b,c")
+      result = ToonEx.Encoder.encode(fragment, delimiter: ",")
+      assert IO.iodata_to_binary(result) == "a,b,c"
+    end
+  end
+
+  describe "ToonEx.Encoder derive with test-local structs" do
+    test "derives with no options at compile time" do
+      struct = %ToonEx.EncoderTest.DerivedNoOpts{a: 1, b: 2, c: 3}
+      assert struct.__struct__ == ToonEx.EncoderTest.DerivedNoOpts
+      assert Map.delete(struct, :__struct__) == %{a: 1, b: 2, c: 3}
+    end
+
+    test "derives with only option at compile time" do
+      struct = %ToonEx.EncoderTest.DerivedOnly{a: 1, b: 2, c: 3}
+      assert struct.__struct__ == ToonEx.EncoderTest.DerivedOnly
+      assert struct.b == 2
+      assert struct.c == 3
+    end
+
+    test "derives with except option at compile time" do
+      struct = %ToonEx.EncoderTest.DerivedExcept{a: 1, secret: "x", c: 3}
+      assert struct.__struct__ == ToonEx.EncoderTest.DerivedExcept
+      assert struct.secret == "x"
+      assert struct.c == 3
     end
   end
 end

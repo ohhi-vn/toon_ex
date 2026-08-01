@@ -174,13 +174,18 @@ defmodule ToonEx.Encode.Strings do
     escape_string(rest, acc, original, skip + 1)
   end
 
-  # Safe ASCII byte (0x00-0x7F, excluding the 5 chars above) — enter chunk mode
+  # Control characters (U+0000 to U+001F, U+007F) — escape as \uXXXX
+  defp escape_string(<<byte, rest::binary>>, acc, original, skip) when byte < 32 or byte == 127 do
+    replacement = "\\u#{escape_control(byte)}"
+    escape_string(rest, [acc | replacement], original, skip + 1)
+  end
+
+  # Safe ASCII byte (0x00-0x7F, excluding control chars and the 5 chars above) — enter chunk mode
   defp escape_string(<<byte, rest::binary>>, acc, original, skip) when byte < 128 do
     escape_string_chunk(rest, acc, original, skip, 1)
   end
 
-  # Multi-byte UTF-8 lead byte (>= 0x80) — enter chunk mode
-  # UTF-8 continuation bytes never need escaping per TOON spec
+  # Multi-byte UTF-8 byte (>= 128) — enter chunk mode (no escaping needed)
   defp escape_string(<<_byte, rest::binary>>, acc, original, skip) do
     escape_string_chunk(rest, acc, original, skip, 1)
   end
@@ -232,6 +237,15 @@ defmodule ToonEx.Encode.Strings do
     escape_string(rest, acc, original, skip + len + 1)
   end
 
+  # Control characters (U+0000 to U+001F, U+007F) in chunk — flush chunk, then escape as \uXXXX
+  defp escape_string_chunk(<<byte, rest::binary>>, acc, original, skip, len)
+       when byte < 32 or byte == 127 do
+    part = binary_part(original, skip, len)
+    replacement = "\\u#{escape_control(byte)}"
+    acc = [acc, part | replacement]
+    escape_string(rest, acc, original, skip + len + 1)
+  end
+
   # Safe ASCII byte in chunk — extend chunk length
   defp escape_string_chunk(<<byte, rest::binary>>, acc, original, skip, len)
        when byte < 128 do
@@ -261,6 +275,20 @@ defmodule ToonEx.Encode.Strings do
   defp escape_byte(?\r), do: "\\r"
   defp escape_byte(?\t), do: "\\t"
 
+  # Control characters (U+0000 to U+001F, U+007F) — emit \uXXXX
+  defp escape_byte(byte) when byte < 32 or byte == 127 do
+    "\\u#{escape_control(byte)}"
+  end
+
+  # Safe ASCII (printable) — pass through
+  defp escape_byte(_byte), do: nil
+
+  # Format a control character byte as 4-digit uppercase hex: U+001F → "001F"
+  defp escape_control(byte) do
+    hex = Integer.to_string(byte, 16) |> String.upcase()
+    String.pad_leading(hex, 4, "0")
+  end
+
   # ── Safe string detection ───────────────────────────────────────────────────
 
   @doc """
@@ -274,6 +302,7 @@ defmodule ToonEx.Encode.Strings do
   - It doesn't contain structure characters or delimiters
   - It doesn't contain control characters
   - It doesn't start with a hyphen
+  - It doesn't start with a hash (#)
 
   ## Examples
 
@@ -305,7 +334,8 @@ defmodule ToonEx.Encode.Strings do
       looks_like_number?(string) or
       contains_structure_chars?(string) or
       contains_control_chars?(string) or
-      starts_with_hyphen?(string)
+      starts_with_hyphen?(string) or
+      starts_with_hash?(string)
   end
 
   # Check delimiter-specific quoting requirements
@@ -378,12 +408,16 @@ defmodule ToonEx.Encode.Strings do
   defp literal?(_), do: false
 
   # State machine for number detection: /^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
+  # Also accepts leading + sign: /^[+-]?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i
   defp looks_like_number?(string) do
     do_looks_like_number?(string, :start)
   end
 
-  # :start — optional minus, then digits
+  # :start — optional minus or plus, then digits
   defp do_looks_like_number?(<<?-, rest::binary>>, :start),
+    do: do_looks_like_number?(rest, :digits)
+
+  defp do_looks_like_number?(<<?+, rest::binary>>, :start),
     do: do_looks_like_number?(rest, :digits)
 
   defp do_looks_like_number?(<<c, rest::binary>>, :start) when c in ?0..?9,
@@ -468,4 +502,7 @@ defmodule ToonEx.Encode.Strings do
   # Performance: Binary pattern matching instead of String.starts_with?
   defp starts_with_hyphen?(<<?-, _::binary>>), do: true
   defp starts_with_hyphen?(_), do: false
+
+  defp starts_with_hash?(<<"#", _::binary>>), do: true
+  defp starts_with_hash?(_), do: false
 end

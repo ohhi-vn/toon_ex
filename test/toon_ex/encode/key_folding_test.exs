@@ -3,7 +3,7 @@ defmodule ToonEx.Encode.KeyFoldingTest do
 
   defp enc(data, opts \\ []), do: ToonEx.encode!(data, opts)
 
-  defp rt(data, opts \\ []) do
+  defp rt(data, opts) do
     encoded = enc(data, opts)
     {:ok, decoded} = ToonEx.decode(encoded)
     {encoded, decoded}

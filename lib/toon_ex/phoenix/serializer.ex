@@ -16,6 +16,17 @@ defmodule ToonEx.Phoenix.Serializer do
       longpoll: false
   ```
 
+  ## Binary Frame Support
+
+  In addition to text-based TOON encoding, this serializer supports compact
+  binary frames for `Phoenix.Socket.Message`, `Phoenix.Socket.Broadcast`, and
+  `Phoenix.Socket.Reply` structs. Binary frames use a length-prefixed binary
+  protocol that avoids the overhead of text serialization.
+
+  - `fastlane!/1` — Binary-encoded broadcasts (`Phoenix.Socket.Broadcast` with `{:binary, data}` payload)
+  - `encode!/1` — Binary-encoded replies and messages with `{:binary, data}` payloads
+  - `decode!/2` — Decodes both text and binary frames (pass `opcode: :text` or `opcode: :binary`)
+
   Note: This is a workround for avoid add Phoenix library dependency.
   """
 
