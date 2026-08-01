@@ -25,7 +25,7 @@ Add `toon_ex` to your dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:toon_ex, "~> 1.0"}
+    {:toon_ex, "~> 1.2"}
   ]
 end
 ```
