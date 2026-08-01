@@ -27,6 +27,65 @@ defmodule ToonEx.Utils do
   def map?(_), do: false
 
   @doc """
+  Checks if a value is an ordered object.
+  """
+  @spec ordered_object?(term()) :: boolean()
+  def ordered_object?(value), do: match?(%ToonEx.OrderedObject{}, value)
+
+  @doc """
+  Returns the keys of an object in declared order.
+
+  For an `OrderedObject` the declared key order is returned; for a plain
+  map `Map.keys/1` is used (Elixir sorts small maps).
+  """
+  @spec object_keys(map()) :: [String.t()]
+  def object_keys(%ToonEx.OrderedObject{values: values}), do: Enum.map(values, &elem(&1, 0))
+  def object_keys(map) when is_map(map), do: Map.keys(map)
+
+  @doc """
+  Fetches the value for a key from an object.
+  """
+  @spec object_get(map(), String.t()) :: term()
+  def object_get(%ToonEx.OrderedObject{values: values}, key) do
+    case :lists.keyfind(key, 1, values) do
+      {_, value} -> value
+      false -> nil
+    end
+  end
+
+  def object_get(map, key) when is_map(map), do: Map.get(map, key)
+
+  @doc """
+  Returns the number of key-value pairs in an object.
+  """
+  @spec object_size(map()) :: non_neg_integer()
+  def object_size(%ToonEx.OrderedObject{values: values}), do: length(values)
+  def object_size(map) when is_map(map), do: map_size(map)
+
+  @doc """
+  Converts an object to a list of `{key, value}` pairs in declared order.
+  """
+  @spec object_to_list(map()) :: [{String.t(), term()}]
+  def object_to_list(%ToonEx.OrderedObject{values: values}), do: values
+  def object_to_list(map) when is_map(map), do: Map.to_list(map)
+
+  @doc """
+  Returns the values of an object in declared order.
+  """
+  @spec object_values(map()) :: [term()]
+  def object_values(%ToonEx.OrderedObject{values: values}), do: Enum.map(values, &elem(&1, 1))
+  def object_values(map) when is_map(map), do: :maps.values(map)
+
+  @doc """
+  Checks if an object has the given key.
+  """
+  @spec object_has_key?(map(), String.t()) :: boolean()
+  def object_has_key?(%ToonEx.OrderedObject{values: values}, key),
+    do: :lists.keymember(key, 1, values)
+
+  def object_has_key?(map, key) when is_map(map), do: Map.has_key?(map, key)
+
+  @doc """
   Checks if a value is a list (array).
 
   ## Examples
@@ -127,7 +186,7 @@ defmodule ToonEx.Utils do
 
   # don't treat empty maps has same keys
   def same_keys?([first | rest]) when is_map(first) and map_size(first) > 0 do
-    first_keys = Map.keys(first) |> Enum.sort()
+    first_keys = object_keys(first) |> Enum.sort()
     do_same_keys?(rest, first_keys)
   end
 
@@ -137,7 +196,7 @@ defmodule ToonEx.Utils do
   defp do_same_keys?([], _first_keys), do: true
 
   defp do_same_keys?([map | rest], first_keys) when is_map(map) do
-    if Map.keys(map) |> Enum.sort() == first_keys do
+    if object_keys(map) |> Enum.sort() == first_keys do
       do_same_keys?(rest, first_keys)
     else
       false
@@ -191,13 +250,13 @@ defmodule ToonEx.Utils do
 
   # Tail-recursive helper to check all values in a single map
   defp do_all_values_primitive?(map) when is_map(map) do
-    do_all_values_primitive?(map, Map.keys(map))
+    do_all_values_primitive?(map, object_keys(map))
   end
 
   defp do_all_values_primitive?(_map, []), do: true
 
   defp do_all_values_primitive?(map, [key | rest]) do
-    case Map.get(map, key) do
+    case object_get(map, key) do
       nil -> do_all_values_primitive?(map, rest)
       v when is_boolean(v) or is_number(v) or is_binary(v) -> do_all_values_primitive?(map, rest)
       _ -> false
@@ -265,6 +324,19 @@ defmodule ToonEx.Utils do
     do_normalize_list(value, [])
   end
 
+  # OrderedObject - preserve declared key order while normalizing values
+  # An empty ordered object normalizes to the empty map so list-item encoding
+  # renders the bare marker (same as an empty plain object).
+  def normalize(%ToonEx.OrderedObject{values: values}) do
+    if values == [] do
+      %{}
+    else
+      %ToonEx.OrderedObject{
+        values: Enum.map(values, fn {k, v} -> {to_string(k), normalize(v)} end)
+      }
+    end
+  end
+
   # Fragment - pass through unchanged so do_encode can handle it specially
   # (avoid converting pre-encoded iodata into a plain binary string)
   def normalize(%ToonEx.Fragment{} = fragment), do: fragment
@@ -320,7 +392,7 @@ defmodule ToonEx.Utils do
   @spec map_values_primitive?(map()) :: boolean()
   @compile {:inline, map_values_primitive?: 1}
   def map_values_primitive?(map) when is_map(map) do
-    :maps.fold(fn _k, v, acc -> acc and primitive?(v) end, true, map)
+    object_values(map) |> Enum.all?(&primitive?/1)
   end
 
   @doc """
@@ -382,13 +454,13 @@ defmodule ToonEx.Utils do
 
       # Map element
       is_map(h) ->
-        h_keys = Map.keys(h)
+        h_keys = object_keys(h)
         h_all_prim = map_values_primitive?(h)
 
         new_keys =
           if keys do
             # Set-equality check: same size and all reference keys present
-            if map_size(h) == length(keys) and Enum.all?(keys, &Map.has_key?(h, &1)) do
+            if object_size(h) == length(keys) and Enum.all?(keys, &object_has_key?(h, &1)) do
               keys
             else
               nil
@@ -430,7 +502,7 @@ defmodule ToonEx.Utils do
       {:leaf, key}
     else
       if uniform_objects?(values) do
-        subkeys = Map.keys(hd(values))
+        subkeys = object_keys(hd(values))
 
         case classify_subfields(subkeys, values) do
           {:ok, subfields} -> {:group, key, subfields}
@@ -452,7 +524,7 @@ defmodule ToonEx.Utils do
   @spec detect_tabular_fields(list()) :: {:ok, list()} | :error
   def detect_tabular_fields(list) when is_list(list) do
     if uniform_objects?(list) do
-      keys = Map.keys(hd(list))
+      keys = object_keys(hd(list))
       classify_subfields(keys, list)
     else
       :error
@@ -469,11 +541,11 @@ defmodule ToonEx.Utils do
   """
   @spec detect_keyed_tabular(map()) :: {:ok, list()} | :error
   def detect_keyed_tabular(map) when is_map(map) do
-    if map_size(map) >= 2 do
-      values = :maps.values(map)
+    if object_size(map) >= 2 do
+      values = object_values(map)
 
       if uniform_objects?(values) do
-        keys = Map.keys(hd(values))
+        keys = object_keys(hd(values))
         classify_subfields(keys, values)
       else
         :error
@@ -513,16 +585,18 @@ defmodule ToonEx.Utils do
   """
   @spec value_at_path(map(), [String.t()]) :: term()
   def value_at_path(obj, []), do: obj
-  def value_at_path(obj, [key | rest]) when is_map(obj), do: value_at_path(Map.get(obj, key), rest)
+
+  def value_at_path(obj, [key | rest]) when is_map(obj),
+    do: value_at_path(object_get(obj, key), rest)
 
   # Every element is a non-empty map and all share the same key set
   defp uniform_objects?(values) do
     case values do
       [first | rest] when is_map(first) and map_size(first) > 0 ->
-        first_keys = Map.keys(first)
+        first_keys = Enum.sort(object_keys(first))
 
         Enum.all?(rest, fn v ->
-          is_map(v) and map_size(v) > 0 and Map.keys(v) == first_keys
+          is_map(v) and object_size(v) > 0 and Enum.sort(object_keys(v)) == first_keys
         end)
 
       _ ->
@@ -535,7 +609,7 @@ defmodule ToonEx.Utils do
   defp classify_subfields(subkeys, values) do
     result =
       Enum.reduce_while(subkeys, {:ok, []}, fn k, {:ok, acc} ->
-        column = Enum.map(values, &Map.get(&1, k))
+        column = Enum.map(values, &object_get(&1, k))
 
         case classify_column(k, column) do
           :fail -> {:halt, :error}

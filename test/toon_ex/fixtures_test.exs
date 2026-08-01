@@ -5,17 +5,18 @@ defmodule ToonEx.FixturesTest do
   This test suite dynamically generates tests from the JSON fixture files,
   ensuring 100% compatibility with the official specification.
 
-  Encoder tests assert the exact string from the spec fixture. The only
-  exceptions are fixtures whose key order Elixir 1.19 cannot reproduce (it
-  auto-sorts map keys, while TOON preserves insertion order); for those we
-  fall back to comparing the decoded forms.
+  Encoder tests assert the exact string from the spec fixture. The fixture
+  JSON is decoded with `Jason.OrderedObject` so key insertion order survives,
+  and those objects are converted to `ToonEx.OrderedObject` before encoding,
+  letting the encoder reproduce the spec's insertion-ordered output exactly.
   """
   use ExUnit.Case, async: true
 
   # Load all fixture files
   @encode_fixtures Path.wildcard("spec/tests/fixtures/encode/*.json")
                    |> Enum.map(fn file ->
-                     {Path.basename(file, ".json"), File.read!(file) |> Jason.decode!()}
+                     {Path.basename(file, ".json"),
+                      File.read!(file) |> Jason.decode!(objects: :ordered_objects)}
                    end)
 
   @decode_fixtures Path.wildcard("spec/tests/fixtures/decode/*.json")
@@ -29,12 +30,18 @@ defmodule ToonEx.FixturesTest do
       for test <- fixture["tests"] do
         @test test
         test test["name"] do
-          input = @test["input"]
-          expected = @test["expected"]
+          # Access the input through the ordered fixture (Jason.OrderedObject
+          # implements Access) so key order is preserved, then convert to a
+          # ToonEx.OrderedObject the encoder understands.
+          input = convert_to_ordered_object(@test["input"])
+
+          # Convert the rest of the test object to a plain map for lookups.
+          test_map = jason_to_map(@test)
+          expected = test_map["expected"]
 
           # Convert string keys to atoms for options (camelCase -> snake_case)
           options =
-            Map.get(@test, "options", %{})
+            Map.get(test_map, "options", %{})
             |> Enum.map(fn {k, v} ->
               snake_case_key =
                 k
@@ -46,72 +53,25 @@ defmodule ToonEx.FixturesTest do
 
           case ToonEx.encode(input, options) do
             {:ok, result} ->
-              if result == expected do
-                # Exact string match — the canonical form.
-                assert true
-              else
-                # Elixir 1.19 auto-sorts map keys, so insertion-ordered fixtures
-                # (e.g. `id: 1\nname: Ada` vs `active: true`) cannot match exactly.
-                # Accept when the decoded forms are equivalent (same data, any
-                # key order). Any other difference is a real encoder bug.
-                decode_options = [strict: false]
+              assert result == expected,
+                     """
+                     Encoder test failed: #{test_map["name"]}
+                     Spec section: #{test_map["specSection"]}
 
-                result_decode = ToonEx.decode(result, decode_options)
-                expected_decode = ToonEx.decode(expected, decode_options)
+                     Input:
+                     #{inspect(input, pretty: true, limit: :infinity)}
 
-                case {result_decode, expected_decode} do
-                  {{:ok, result_decoded}, {:ok, expected_decoded}} ->
-                    equivalent =
-                      maps_equivalent?(result_decoded, expected_decoded) or
-                        maps_nearly_equivalent?(
-                          result_decoded,
-                          expected_decoded
-                        )
+                     Expected:
+                     #{expected}
 
-                    assert equivalent,
-                           """
-                           Encoder test failed: #{@test["name"]}
-                           Spec section: #{@test["specSection"]}
-
-                           Input:
-                           #{inspect(input, pretty: true, limit: :infinity)}
-
-                           Expected:
-                           #{expected}
-
-                           Got:
-                           #{result}
-
-                           Expected (decoded): #{inspect(expected_decoded, pretty: true)}
-                           Got (decoded):      #{inspect(result_decoded, pretty: true)}
-                           """
-
-                  {{:error, decode_error}, _} ->
-                    flunk("""
-                    Encoder produced output that cannot be decoded: #{@test["name"]}
-
-                    Encoded output:
-                    #{result}
-
-                    Decode error: #{Exception.message(decode_error)}
-                    """)
-
-                  {_, {:error, expected_decode_error}} ->
-                    flunk("""
-                    Expected output cannot be decoded (spec error?): #{@test["name"]}
-
-                    Expected:
-                    #{expected}
-
-                    Decode error: #{Exception.message(expected_decode_error)}
-                    """)
-                end
-              end
+                     Got:
+                     #{result}
+                     """
 
             {:error, error} ->
               flunk("""
-              Unexpected encoding error: #{@test["name"]}
-              Spec section: #{@test["specSection"]}
+              Unexpected encoding error: #{test_map["name"]}
+              Spec section: #{test_map["specSection"]}
 
               Input: #{inspect(input, pretty: true, limit: :infinity)}
               Error: #{Exception.message(error)}
@@ -121,45 +81,6 @@ defmodule ToonEx.FixturesTest do
       end
     end
   end
-
-  # Deep equivalence check for maps (ignoring key order)
-  defp maps_equivalent?(a, b) when is_map(a) and is_map(b) do
-    Enum.sort(Map.keys(a)) == Enum.sort(Map.keys(b)) and
-      Enum.all?(a, fn {k, v} -> maps_equivalent?(v, Map.get(b, k)) end)
-  end
-
-  defp maps_equivalent?(a, b) when is_list(a) and is_list(b) do
-    length(a) == length(b) and
-      Enum.zip(a, b) |> Enum.all?(fn {x, y} -> maps_equivalent?(x, y) end)
-  end
-
-  defp maps_equivalent?(a, b), do: a == b
-
-  # Nearly equivalent check (allows missing non-critical fields in complex nested cases)
-  defp maps_nearly_equivalent?(a, b) when is_map(a) and is_map(b) do
-    # Check if at least 90% of fields match
-    a_keys = Map.keys(a) |> MapSet.new()
-    b_keys = Map.keys(b) |> MapSet.new()
-    common_keys = MapSet.intersection(a_keys, b_keys) |> MapSet.to_list()
-
-    # If we have most keys in common and those values match, consider it equivalent
-    coverage = length(common_keys) / max(map_size(a), map_size(b))
-
-    coverage >= 0.9 and
-      Enum.all?(common_keys, fn k -> maps_equivalent?(Map.get(a, k), Map.get(b, k)) end)
-  end
-
-  defp maps_nearly_equivalent?(a, b) when is_list(a) and is_list(b) do
-    length(a) == length(b) and
-      Enum.zip(a, b) |> Enum.all?(fn {x, y} -> maps_nearly_equivalent?(x, y) end)
-  end
-
-  defp maps_nearly_equivalent?(a, b), do: a == b
-
-  # Helper to convert decoder option keys from spec format to Elixir format
-  defp convert_decoder_option_key("indent"), do: :indent_size
-  defp convert_decoder_option_key("indentSize"), do: :indent_size
-  defp convert_decoder_option_key(key), do: key |> Macro.underscore() |> String.to_atom()
 
   # Generate decoder tests
   for {category, fixture} <- @decode_fixtures do
@@ -224,4 +145,39 @@ defmodule ToonEx.FixturesTest do
       end
     end
   end
+
+  # Helper: recursively convert Jason.OrderedObject to a plain map (order lost).
+  defp jason_to_map(value) when is_map(value) do
+    if value.__struct__ == Jason.OrderedObject do
+      Map.new(value.values, fn {k, v} -> {k, jason_to_map(v)} end)
+    else
+      Map.new(value, fn {k, v} -> {k, jason_to_map(v)} end)
+    end
+  end
+
+  defp jason_to_map(value) when is_list(value), do: Enum.map(value, &jason_to_map/1)
+  defp jason_to_map(value), do: value
+
+  # Helper: recursively convert Jason.OrderedObject to ToonEx.OrderedObject,
+  # preserving declared key order.
+  defp convert_to_ordered_object(value) when is_map(value) do
+    if value.__struct__ == Jason.OrderedObject do
+      ToonEx.OrderedObject.new(
+        Enum.map(value.values, fn {k, v} -> {k, convert_to_ordered_object(v)} end)
+      )
+    else
+      Map.new(value, fn {k, v} -> {k, convert_to_ordered_object(v)} end)
+    end
+  end
+
+  defp convert_to_ordered_object(value) when is_list(value) do
+    Enum.map(value, &convert_to_ordered_object/1)
+  end
+
+  defp convert_to_ordered_object(value), do: value
+
+  # Helper to convert decoder option keys from spec format to Elixir format
+  defp convert_decoder_option_key("indent"), do: :indent_size
+  defp convert_decoder_option_key("indentSize"), do: :indent_size
+  defp convert_decoder_option_key(key), do: key |> Macro.underscore() |> String.to_atom()
 end

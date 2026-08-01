@@ -31,6 +31,7 @@ defmodule ToonEx.Encode.Objects do
       [header | rows] = Arrays.encode_keyed(nil, map, opts)
       writer = Writer.new(opts.indent)
       writer = Writer.push(writer, header, 0)
+
       Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, 1) end)
       |> Writer.to_iodata()
     else
@@ -61,7 +62,7 @@ defmodule ToonEx.Encode.Objects do
     path_prefix = Map.get(opts, :current_path_prefix, "")
 
     Enum.reduce(keys, writer, fn key, acc ->
-      encode_entry(acc, key, Map.get(map, key), depth, opts, path_prefix)
+      encode_entry(acc, key, Utils.object_get(map, key), depth, opts, path_prefix)
     end)
   end
 
@@ -169,26 +170,31 @@ defmodule ToonEx.Encode.Objects do
 
   # Get keys in the correct order based on key_order option
   # Performance: Use MapSet for O(1) membership checks instead of O(n) list `in` checks
+  # OrderedObject: declared order wins unless a key_order override covers all keys.
+  defp get_ordered_keys(%ToonEx.OrderedObject{} = map, key_order, _path) do
+    apply_key_order_option(Utils.object_keys(map), key_order)
+  end
+
   # Pattern 1: key_order is a map with path-specific ordering
   defp get_ordered_keys(map, key_order, path) when is_map(key_order) do
     case Map.fetch(key_order, path) do
       {:ok, ordered} ->
-        key_set = MapSet.new(Map.keys(map))
+        key_set = MapSet.new(Utils.object_keys(map))
         Enum.filter(ordered, &MapSet.member?(key_set, &1))
 
       :error ->
-        Map.keys(map)
+        Utils.object_keys(map)
     end
   end
 
   # Pattern 2: key_order is a list at root level
   defp get_ordered_keys(map, key_order, [])
        when is_list(key_order) and key_order != [] do
-    existing_keys = Map.keys(map)
+    existing_keys = Utils.object_keys(map)
     key_set = MapSet.new(existing_keys)
     ordered_existing = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
-    if length(ordered_existing) == map_size(map) do
+    if length(ordered_existing) == Utils.object_size(map) do
       ordered_existing
     else
       existing_keys
@@ -197,8 +203,19 @@ defmodule ToonEx.Encode.Objects do
 
   # Pattern 3: No key_order or not applicable - use map insertion order (Erlang 27+)
   defp get_ordered_keys(map, _key_order, _path) do
-    Map.keys(map)
+    Utils.object_keys(map)
   end
+
+  # Reorder keys by a list key_order when it covers every key; otherwise keep
+  # the original (declared) order.
+  defp apply_key_order_option(keys, key_order) when is_list(key_order) and key_order != [] do
+    key_set = MapSet.new(keys)
+    ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
+
+    if length(ordered) == length(keys), do: ordered, else: keys
+  end
+
+  defp apply_key_order_option(keys, _key_order), do: keys
 
   @doc """
   Encodes a single key-value pair.
@@ -373,7 +390,7 @@ defmodule ToonEx.Encode.Objects do
       :safe ->
         # Only fold single-key maps with valid identifier segments
         Utils.map?(value) and
-          map_size(value) == 1 and
+          Utils.object_size(value) == 1 and
           valid_identifier_segment?(key) and
           flatten_depth_allows?(opts, 1) and
           not has_collision?(key, value, opts, path_prefix)
@@ -463,7 +480,7 @@ defmodule ToonEx.Encode.Objects do
   # Pattern 3: Continue folding if conditions are met
   defp collect_fold_path(path, value, opts, current_depth) when is_map(value) do
     if flatten_depth_allows?(opts, current_depth + 1) do
-      [{next_key, next_value}] = Map.to_list(value)
+      [{next_key, next_value}] = Utils.object_to_list(value)
 
       if valid_identifier_segment?(next_key) do
         collect_fold_path([next_key | path], next_value, opts, current_depth + 1)

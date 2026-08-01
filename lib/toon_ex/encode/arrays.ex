@@ -140,7 +140,7 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   defp build_keyed_header(encoded_key, map, fields, opts) do
-    length_marker = format_length_marker(map_size(map), opts.length_marker)
+    length_marker = format_length_marker(Utils.object_size(map), opts.length_marker)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     fields_iodata =
@@ -168,7 +168,7 @@ defmodule ToonEx.Encode.Arrays do
     paths = Utils.leaf_paths(fields)
 
     rows =
-      Enum.map(map, fn {entry_key, entry} ->
+      Enum.map(Utils.object_to_list(map), fn {entry_key, entry} ->
         cells =
           do_intersperse_map(
             paths,
@@ -323,7 +323,12 @@ defmodule ToonEx.Encode.Arrays do
   # top-level field; otherwise keep the detected (first-object) order.
   defp apply_key_order(fields, key_order)
        when is_list(key_order) and key_order != [] do
-    top_keys = Enum.map(fields, fn {:leaf, k} -> k; {:group, k, _} -> k end)
+    top_keys =
+      Enum.map(fields, fn
+        {:leaf, k} -> k
+        {:group, k, _} -> k
+      end)
+
     key_set = MapSet.new(top_keys)
     ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
@@ -375,7 +380,7 @@ defmodule ToonEx.Encode.Arrays do
     keys
     |> Enum.with_index()
     |> Enum.flat_map(fn {k, index} ->
-      v = Map.get(item, k)
+      v = Utils.object_get(item, k)
       encode_map_entry_with_marker(k, v, index, depth, opts)
     end)
   end
@@ -467,25 +472,36 @@ defmodule ToonEx.Encode.Arrays do
 
   # Helper to get ordered keys for map items
   # Performance: Use MapSet for O(1) membership checks instead of O(n) list `in` checks
+  # OrderedObject keeps its declared order when no key_order is provided.
+  defp get_ordered_map_keys(%ToonEx.OrderedObject{} = item, key_order)
+       when is_list(key_order) and key_order != [] do
+    apply_order_option(Utils.object_keys(item), key_order)
+  end
+
+  defp get_ordered_map_keys(%ToonEx.OrderedObject{} = item, _key_order) do
+    Utils.object_keys(item)
+  end
+
   defp get_ordered_map_keys(item, key_order) do
-    map_keys = Map.keys(item)
+    apply_order_option(Map.keys(item), key_order)
+  end
 
-    case key_order do
-      [] ->
-        Enum.sort(map_keys)
+  defp apply_order_option(map_keys, []) do
+    Enum.sort(map_keys)
+  end
 
-      key_order when is_list(key_order) ->
-        key_set = MapSet.new(map_keys)
-        # Single pass through key_order with O(1) lookups
-        ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
-        # Single pass through map_keys with O(1) lookups
-        order_set = MapSet.new(key_order)
-        extra = map_keys |> Enum.reject(&MapSet.member?(order_set, &1)) |> Enum.sort()
-        ordered ++ extra
+  defp apply_order_option(map_keys, key_order) when is_list(key_order) do
+    key_set = MapSet.new(map_keys)
+    # Single pass through key_order with O(1) lookups
+    ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
+    # Single pass through map_keys with O(1) lookups
+    order_set = MapSet.new(key_order)
+    extra = map_keys |> Enum.reject(&MapSet.member?(order_set, &1)) |> Enum.sort()
+    ordered ++ extra
+  end
 
-      _ ->
-        Enum.sort(map_keys)
-    end
+  defp apply_order_option(map_keys, _key_order) do
+    Enum.sort(map_keys)
   end
 
   # Helper for encoding map entries with list markers

@@ -256,7 +256,7 @@ defmodule ToonEx.Encode do
       Enum.map(data, fn obj ->
         row_values =
           final_keys
-          |> Enum.map(fn k -> Primitives.encode(Map.get(obj, k), delim) end)
+          |> Enum.map(fn k -> Primitives.encode(Utils.object_get(obj, k), delim) end)
           |> Enum.intersperse(delim)
 
         ["\n", indent, row_values]
@@ -297,6 +297,16 @@ defmodule ToonEx.Encode do
   # Encode a single root list item
   defp encode_root_list_item(item, _depth, _opts) when is_map(item) and map_size(item) == 0 do
     [[@list_item_marker, @space]]
+  end
+
+  # OrderedObject root list item — preserve declared key order (no type-priority sort).
+  defp encode_root_list_item(%ToonEx.OrderedObject{} = item, depth, opts) do
+    item
+    |> Utils.object_to_list()
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{k, v}, index} ->
+      encode_root_list_entry(k, v, index, depth, opts)
+    end)
   end
 
   defp encode_root_list_item(item, depth, opts) when is_map(item) do

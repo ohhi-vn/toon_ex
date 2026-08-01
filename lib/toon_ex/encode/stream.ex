@@ -78,7 +78,7 @@ defmodule ToonEx.Encode.Stream do
     # Build all chunks
     result =
       Enum.reduce_while(keys, {writer, []}, fn key, {w, acc} ->
-        value = Map.get(data, key)
+        value = Utils.object_get(data, key)
         new_w = encode_entry_stream(w, key, value, depth, opts)
 
         if writer_is_full?(new_w) do
@@ -326,20 +326,35 @@ defmodule ToonEx.Encode.Stream do
   end
 
   # Key ordering (reuse from Objects)
+  defp get_ordered_keys(%ToonEx.OrderedObject{} = map, key_order, _path) do
+    keys = Utils.object_keys(map)
+
+    case key_order do
+      key_order when is_list(key_order) and key_order != [] ->
+        key_set = MapSet.new(keys)
+        ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
+
+        if length(ordered) == length(keys), do: ordered, else: keys
+
+      _ ->
+        keys
+    end
+  end
+
   defp get_ordered_keys(map, key_order, path) when is_map(key_order) do
     case Map.fetch(key_order, path) do
       {:ok, ordered} ->
-        key_set = MapSet.new(Map.keys(map))
+        key_set = MapSet.new(Utils.object_keys(map))
         Enum.filter(ordered, &MapSet.member?(key_set, &1))
 
       :error ->
-        Map.keys(map)
+        Utils.object_keys(map)
     end
   end
 
   defp get_ordered_keys(map, key_order, [])
        when is_list(key_order) and key_order != [] do
-    existing_keys = Map.keys(map)
+    existing_keys = Utils.object_keys(map)
     key_set = MapSet.new(existing_keys)
     ordered_existing = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
@@ -351,7 +366,7 @@ defmodule ToonEx.Encode.Stream do
   end
 
   defp get_ordered_keys(map, _key_order, _path) do
-    Map.keys(map)
+    Utils.object_keys(map)
   end
 
   # Key folding helpers
@@ -359,7 +374,7 @@ defmodule ToonEx.Encode.Stream do
     case Map.get(opts, :key_folding, :off) do
       :safe ->
         Utils.map?(value) and
-          map_size(value) == 1 and
+          Utils.object_size(value) == 1 and
           valid_identifier_segment?(key) and
           flatten_depth_allows?(opts, 1) and
           not has_collision?(key, value, opts, path_prefix)
@@ -398,7 +413,7 @@ defmodule ToonEx.Encode.Stream do
 
   defp collect_fold_path(path, value, opts, current_depth) when is_map(value) do
     if flatten_depth_allows?(opts, current_depth + 1) do
-      [{next_key, next_value}] = Map.to_list(value)
+      [{next_key, next_value}] = Utils.object_to_list(value)
 
       if valid_identifier_segment?(next_key) do
         collect_fold_path([next_key | path], next_value, opts, current_depth + 1)
@@ -472,7 +487,12 @@ defmodule ToonEx.Encode.Stream do
         do_detect_array_type(t, {all_prim, false, all_prim_vals, nil, new_count, false})
 
       is_map(h) ->
-        h_keys = Map.keys(h) |> Enum.sort()
+        h_keys =
+          case h do
+            %ToonEx.OrderedObject{} -> Utils.object_keys(h)
+            _ -> Map.keys(h) |> Enum.sort()
+          end
+
         h_all_prim = do_all_values_primitive?(h)
 
         new_keys =
@@ -497,7 +517,7 @@ defmodule ToonEx.Encode.Stream do
   end
 
   defp do_all_values_primitive?(map) do
-    :maps.fold(fn _k, v, acc -> acc and Utils.primitive?(v) end, true, map)
+    Utils.object_values(map) |> Enum.all?(fn v -> Utils.primitive?(v) end)
   end
 
   defp writer_is_full?(%Writer{lines: lines}) when length(lines) >= 100, do: true
