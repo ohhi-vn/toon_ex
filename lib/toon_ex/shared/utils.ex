@@ -414,6 +414,142 @@ defmodule ToonEx.Utils do
   end
 
   @doc """
+  Classifies a column of values (the values at one key across all elements)
+  into a field entry for tabular/keyed-tabular encoding (§9.3).
+
+  Returns:
+    - `{:leaf, key}` when every value is a primitive (uniform-primitive column).
+    - `{:group, key, subfields}` when every value is a non-empty object sharing
+      one key set and every sub-column is uniform-primitive or nested-uniform.
+    - `:fail` otherwise.
+  """
+  @spec classify_column(String.t(), list()) ::
+          {:leaf, String.t()} | {:group, String.t(), list()} | :fail
+  def classify_column(key, values) do
+    if all_primitives?(values) do
+      {:leaf, key}
+    else
+      if uniform_objects?(values) do
+        subkeys = Map.keys(hd(values))
+
+        case classify_subfields(subkeys, values) do
+          {:ok, subfields} -> {:group, key, subfields}
+          :error -> :fail
+        end
+      else
+        :fail
+      end
+    end
+  end
+
+  @doc """
+  Detects whether a list qualifies for tabular form (§9.3).
+
+  Returns `{:ok, fields}` where `fields` is the ordered field tree (a list of
+  `{:leaf, key}` and `{:group, key, subfields}` entries in first-object key
+  order), or `:error` when the array must use inline or list form.
+  """
+  @spec detect_tabular_fields(list()) :: {:ok, list()} | :error
+  def detect_tabular_fields(list) when is_list(list) do
+    if uniform_objects?(list) do
+      keys = Map.keys(hd(list))
+      classify_subfields(keys, list)
+    else
+      :error
+    end
+  end
+
+  @doc """
+  Detects whether an object qualifies for keyed tabular form (§9.5).
+
+  Requires at least two entries whose values are uniform non-empty objects
+  whose columns are all uniform-primitive or nested-uniform.
+
+  Returns `{:ok, fields}` (the ordered field tree) or `:error`.
+  """
+  @spec detect_keyed_tabular(map()) :: {:ok, list()} | :error
+  def detect_keyed_tabular(map) when is_map(map) do
+    if map_size(map) >= 2 do
+      values = :maps.values(map)
+
+      if uniform_objects?(values) do
+        keys = Map.keys(hd(values))
+        classify_subfields(keys, values)
+      else
+        :error
+      end
+    else
+      :error
+    end
+  end
+
+  @doc """
+  Expands a field tree into the list of leaf-value paths in depth-first,
+  pre-order walk order (§9.3).
+
+  ## Examples
+
+      iex> fields = [{:leaf, "id"}, {:group, "customer", [{:leaf, "name"}, {:leaf, "country"}]}]
+      iex> ToonEx.Utils.leaf_paths(fields)
+      [["id"], ["customer", "name"], ["customer", "country"]]
+  """
+  @spec leaf_paths(list()) :: [[String.t()]]
+  def leaf_paths(fields) do
+    Enum.flat_map(fields, fn
+      {:leaf, key} -> [[key]]
+      {:group, key, children} -> Enum.map(leaf_paths(children), &[key | &1])
+    end)
+  end
+
+  @doc """
+  Walks a leaf path through a nested object and returns the value at it.
+  Used to flatten nested-uniform columns into depth-first row cells (§9.3).
+
+  ## Examples
+
+      iex> obj = %{"customer" => %{"name" => "Ada", "country" => "DK"}}
+      iex> ToonEx.Utils.value_at_path(obj, ["customer", "name"])
+      "Ada"
+  """
+  @spec value_at_path(map(), [String.t()]) :: term()
+  def value_at_path(obj, []), do: obj
+  def value_at_path(obj, [key | rest]) when is_map(obj), do: value_at_path(Map.get(obj, key), rest)
+
+  # Every element is a non-empty map and all share the same key set
+  defp uniform_objects?(values) do
+    case values do
+      [first | rest] when is_map(first) and map_size(first) > 0 ->
+        first_keys = Map.keys(first)
+
+        Enum.all?(rest, fn v ->
+          is_map(v) and map_size(v) > 0 and Map.keys(v) == first_keys
+        end)
+
+      _ ->
+        false
+    end
+  end
+
+  defp classify_subfields([], _values), do: {:ok, []}
+
+  defp classify_subfields(subkeys, values) do
+    result =
+      Enum.reduce_while(subkeys, {:ok, []}, fn k, {:ok, acc} ->
+        column = Enum.map(values, &Map.get(&1, k))
+
+        case classify_column(k, column) do
+          :fail -> {:halt, :error}
+          field -> {:cont, {:ok, [field | acc]}}
+        end
+      end)
+
+    case result do
+      {:ok, fields} -> {:ok, :lists.reverse(fields)}
+      :error -> :error
+    end
+  end
+
+  @doc """
   Formats a length marker for arrays.
 
   ## Examples

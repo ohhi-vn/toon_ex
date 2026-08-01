@@ -26,9 +26,18 @@ defmodule ToonEx.Encode.Objects do
   """
   @spec encode(map(), non_neg_integer(), map()) :: [iodata()]
   def encode(map, depth, opts) when is_map(map) do
-    map
-    |> do_encode_map(depth, opts)
-    |> Writer.to_iodata()
+    if depth == 0 and match?({:ok, _}, Utils.detect_keyed_tabular(map)) do
+      # Keyed tabular form at the root — keyless keyed header (§9.5, §5).
+      [header | rows] = Arrays.encode_keyed(nil, map, opts)
+      writer = Writer.new(opts.indent)
+      writer = Writer.push(writer, header, 0)
+      Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, 1) end)
+      |> Writer.to_iodata()
+    else
+      map
+      |> do_encode_map(depth, opts)
+      |> Writer.to_iodata()
+    end
   end
 
   def encode_to_lines(map, depth, opts) do
@@ -57,17 +66,27 @@ defmodule ToonEx.Encode.Objects do
   end
 
   # Nested map entry — uses encode_to_lines to avoid the binary roundtrip.
+  # If the value qualifies for keyed tabular form (§9.5), emits a keyed header
+  # with entry rows instead of a plain `key:` + nested fields.
   defp encode_map_entry(writer, key, value, depth, opts) do
-    encoded_key = Strings.encode_key(key)
-    header = [encoded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
+    case Utils.detect_keyed_tabular(value) do
+      {:ok, _} ->
+        [header | rows] = Arrays.encode_keyed(key, value, opts)
+        writer = Writer.push(writer, header, depth)
+        Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, depth + 1) end)
 
-    current_prefix = Map.get(opts, :current_path_prefix, "")
-    new_prefix = build_path_prefix(current_prefix, key)
-    nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
-    nested_lines = encode_to_lines(value, depth + 1, nested_opts)
+      :error ->
+        encoded_key = Strings.encode_key(key)
+        header = [encoded_key, Constants.colon()]
+        writer = Writer.push(writer, header, depth)
 
-    append_lines(writer, nested_lines)
+        current_prefix = Map.get(opts, :current_path_prefix, "")
+        new_prefix = build_path_prefix(current_prefix, key)
+        nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
+        nested_lines = encode_to_lines(value, depth + 1, nested_opts)
+
+        append_lines(writer, nested_lines)
+    end
   end
 
   # Clause 1 — primitive final value
@@ -101,12 +120,20 @@ defmodule ToonEx.Encode.Objects do
   # Clause 4 — non-empty map final value (UPDATED: uses encode_to_lines + append_lines/2)
   defp encode_folded_value(writer, folded_key, final_value, depth, opts)
        when is_map(final_value) do
-    nested_opts = Map.put(opts, :flatten_depth, 0)
-    header = [folded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
-    nested_lines = encode_to_lines(final_value, depth + 1, nested_opts)
-    # 2-arg version from performance fix
-    append_lines(writer, nested_lines)
+    case Utils.detect_keyed_tabular(final_value) do
+      {:ok, _} ->
+        [header | rows] = Arrays.encode_keyed(folded_key, final_value, opts)
+        writer = Writer.push(writer, header, depth)
+        Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, depth + 1) end)
+
+      :error ->
+        nested_opts = Map.put(opts, :flatten_depth, 0)
+        header = [folded_key, Constants.colon()]
+        writer = Writer.push(writer, header, depth)
+        nested_lines = encode_to_lines(final_value, depth + 1, nested_opts)
+        # 2-arg version from performance fix
+        append_lines(writer, nested_lines)
+    end
   end
 
   # Clause 5 — fallback for any type not covered above (encodes as null)

@@ -22,9 +22,9 @@ defmodule ToonEx.Encode.Options do
       doc: "Number of spaces for indentation"
     ],
     indent_size: [
-      type: :non_neg_integer,
+      type: :pos_integer,
       default: 2,
-      doc: "Indentation size in spaces (used by decoder)"
+      doc: "Indentation size in spaces (spec §13 name; overrides :indent when provided)"
     ],
     delimiter: [
       type: :string,
@@ -98,8 +98,17 @@ defmodule ToonEx.Encode.Options do
         validated_map = Map.new(validated)
 
         if valid_delimiter?(validated_map.delimiter) do
+          indent =
+            cond do
+              Keyword.has_key?(opts, :indent_size) -> validated_map.indent_size
+              Keyword.has_key?(opts, :indent) -> validated_map.indent
+              true -> 2
+            end
+
           validated_with_indent =
-            Map.put(validated_map, :indent_string, String.duplicate(" ", validated_map.indent))
+            validated_map
+            |> Map.put(:indent, indent)
+            |> Map.put(:indent_string, String.duplicate(" ", indent))
 
           {:ok, validated_with_indent}
         else

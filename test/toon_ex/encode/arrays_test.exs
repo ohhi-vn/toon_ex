@@ -6,17 +6,19 @@ defmodule ToonEx.Encode.ArraysTest do
   describe "encode_empty/2" do
     test "encodes empty array with default length_marker" do
       result = Arrays.encode_empty("items")
-      assert IO.iodata_to_binary(result) == "items[0]:"
+      # §9.1: the empty-array value form
+      assert IO.iodata_to_binary(result) == "items: []"
     end
 
     test "encodes empty array with nil length_marker" do
       result = Arrays.encode_empty("items", nil)
-      assert IO.iodata_to_binary(result) == "items[0]:"
+      assert IO.iodata_to_binary(result) == "items: []"
     end
 
     test "encodes empty array with custom length_marker" do
       result = Arrays.encode_empty("items", "#")
-      assert IO.iodata_to_binary(result) == "items[#0]:"
+      # The `key: []` form has no header, so no length marker appears
+      assert IO.iodata_to_binary(result) == "items: []"
     end
   end
 
@@ -61,9 +63,10 @@ defmodule ToonEx.Encode.ArraysTest do
     test "handles empty list input" do
       opts = %{delimiter: ",", length_marker: nil, indent_string: "  ", key_order: nil}
 
-      [header] = Arrays.encode_tabular("users", [], 0, opts)
+      # Empty arrays use the §9.1 `key: []` value form
+      [line] = Arrays.encode_tabular("users", [], 0, opts)
 
-      assert IO.iodata_to_binary(header) == "users[0]{}:"
+      assert IO.iodata_to_binary(line) == "users: []"
     end
   end
 

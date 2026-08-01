@@ -104,15 +104,18 @@ defmodule ToonEx.Encode.Stream do
     if data == [] do
       [Arrays.encode_empty("items", opts.length_marker)]
     else
-      case detect_array_type(data) do
-        {:primitive, _} ->
-          [Arrays.encode_inline("items", data, opts)]
-
-        {:tabular, _length, _keys} ->
+      case Utils.detect_tabular_fields(data) do
+        {:ok, _fields} ->
           [Arrays.encode_tabular("items", data, 0, opts)]
 
-        {:list, _} ->
-          [Arrays.encode_list("items", data, depth, opts)]
+        :error ->
+          case detect_array_type(data) do
+            {:primitive, _} ->
+              [Arrays.encode_inline("items", data, opts)]
+
+            _ ->
+              [Arrays.encode_list("items", data, depth, opts)]
+          end
       end
     end
   end
@@ -224,24 +227,46 @@ defmodule ToonEx.Encode.Stream do
 
   defp encode_folded_value_stream(writer, folded_key, final_value, depth, opts)
        when is_map(final_value) do
-    nested_opts = Map.put(opts, :flatten_depth, 0)
-    header = [folded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
-    nested_lines = Objects.encode_to_lines(final_value, depth + 1, nested_opts)
-    Writer.push_many(writer, nested_lines, depth)
+    case Utils.detect_keyed_tabular(final_value) do
+      {:ok, _} ->
+        [header | rows] = Arrays.encode_keyed(folded_key, final_value, opts)
+        writer = Writer.push(writer, header, depth)
+
+        Enum.reduce(rows, writer, fn row, acc ->
+          Writer.push(acc, row, depth + 1)
+        end)
+
+      :error ->
+        nested_opts = Map.put(opts, :flatten_depth, 0)
+        header = [folded_key, Constants.colon()]
+        writer = Writer.push(writer, header, depth)
+        nested_lines = Objects.encode_to_lines(final_value, depth + 1, nested_opts)
+        Writer.push_many(writer, nested_lines, depth)
+    end
   end
 
   # Map entry encoding for nested maps
   defp encode_map_entry_stream(writer, key, value, depth, opts) do
-    encoded_key = Strings.encode_key(key)
-    header = [encoded_key, Constants.colon()]
-    writer = Writer.push(writer, header, depth)
+    case Utils.detect_keyed_tabular(value) do
+      {:ok, _} ->
+        [header | rows] = Arrays.encode_keyed(key, value, opts)
+        writer = Writer.push(writer, header, depth)
 
-    current_prefix = Map.get(opts, :current_path_prefix, "")
-    new_prefix = build_path_prefix(current_prefix, key)
-    nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
-    nested_lines = Objects.encode_to_lines(value, depth + 1, nested_opts)
-    Writer.push_many(writer, nested_lines, depth)
+        Enum.reduce(rows, writer, fn row, acc ->
+          Writer.push(acc, row, depth + 1)
+        end)
+
+      :error ->
+        encoded_key = Strings.encode_key(key)
+        header = [encoded_key, Constants.colon()]
+        writer = Writer.push(writer, header, depth)
+
+        current_prefix = Map.get(opts, :current_path_prefix, "")
+        new_prefix = build_path_prefix(current_prefix, key)
+        nested_opts = Map.put(opts, :current_path_prefix, new_prefix)
+        nested_lines = Objects.encode_to_lines(value, depth + 1, nested_opts)
+        Writer.push_many(writer, nested_lines, depth)
+    end
   end
 
   # Helper to split iodata on newlines without converting to binary

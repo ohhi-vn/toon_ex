@@ -249,7 +249,8 @@ defmodule ToonEx.EncodeTest do
   describe "inline array encoding" do
     test "empty array" do
       {:ok, result} = ToonEx.encode(%{"items" => []})
-      assert result == "items[0]:"
+      # §9.1: the empty-array value form
+      assert result == "items: []"
     end
 
     test "primitive array" do
@@ -411,10 +412,11 @@ defmodule ToonEx.EncodeTest do
       assert String.trim_trailing(expected_toon) == ToonEx.encode!(data)
     end
 
-    test "object array with nested values uses list format" do
+    test "object array with nested uniform values uses tabular form with nested field group" do
       data = [%{"id" => 1, "meta" => %{"x" => 1}}, %{"id" => 2, "meta" => %{"x" => 2}}]
       {:ok, result} = ToonEx.encode(%{"items" => data})
-      assert String.contains?(result, "- ")
+      # §9.3: a nested-uniform column collapses into a nested field group
+      assert result == "items[2]{id,meta{x}}:\n  1,1\n  2,2"
     end
   end
 
@@ -437,7 +439,8 @@ defmodule ToonEx.EncodeTest do
   describe "root-level array encoding" do
     test "root empty array" do
       {:ok, result} = ToonEx.encode([])
-      assert result == "[0]:"
+      # §9.1: the empty-array value form
+      assert result == "[]"
     end
 
     test "root inline primitive array" do
@@ -613,7 +616,8 @@ defmodule ToonEx.EncodeTest do
   describe "tuple list encoding" do
     test "encodes empty list as empty array" do
       {:ok, result} = ToonEx.encode([])
-      assert result == "[0]:"
+      # §9.1: the empty-array value form
+      assert result == "[]"
     end
   end
 

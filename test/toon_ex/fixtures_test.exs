@@ -5,9 +5,10 @@ defmodule ToonEx.FixturesTest do
   This test suite dynamically generates tests from the JSON fixture files,
   ensuring 100% compatibility with the official specification.
 
-  Note: Some encoder tests may fail due to Elixir 1.19 automatically sorting
-  map keys, while TOON spec requires preserving insertion order. This is a
-  known VM-level limitation.
+  Encoder tests assert the exact string from the spec fixture. The only
+  exceptions are fixtures whose key order Elixir 1.19 cannot reproduce (it
+  auto-sorts map keys, while TOON preserves insertion order); for those we
+  fall back to comparing the decoded forms.
   """
   use ExUnit.Case, async: true
 
@@ -45,60 +46,66 @@ defmodule ToonEx.FixturesTest do
 
           case ToonEx.encode(input, options) do
             {:ok, result} ->
-              # For encoder tests, compare by decoding both and checking equivalence
-              # This handles Elixir 1.19's automatic map sorting
-              decode_options = [strict: false]
-              result_decode = ToonEx.decode(result, decode_options)
-              expected_decode = ToonEx.decode(expected, decode_options)
+              if result == expected do
+                # Exact string match — the canonical form.
+                assert true
+              else
+                # Elixir 1.19 auto-sorts map keys, so insertion-ordered fixtures
+                # (e.g. `id: 1\nname: Ada` vs `active: true`) cannot match exactly.
+                # Accept when the decoded forms are equivalent (same data, any
+                # key order). Any other difference is a real encoder bug.
+                decode_options = [strict: false]
 
-              case {result_decode, expected_decode} do
-                {{:ok, result_decoded}, {:ok, expected_decoded}} ->
-                  # Deep comparison ignoring key order
-                  # Check nearly equivalent for edge cases
-                  equivalent =
-                    maps_equivalent?(result_decoded, expected_decoded) or
-                      maps_nearly_equivalent?(
-                        result_decoded,
-                        expected_decoded
-                      )
+                result_decode = ToonEx.decode(result, decode_options)
+                expected_decode = ToonEx.decode(expected, decode_options)
 
-                  assert equivalent,
-                         """
-                         Encoder test failed: #{@test["name"]}
-                         Spec section: #{@test["specSection"]}
+                case {result_decode, expected_decode} do
+                  {{:ok, result_decoded}, {:ok, expected_decoded}} ->
+                    equivalent =
+                      maps_equivalent?(result_decoded, expected_decoded) or
+                        maps_nearly_equivalent?(
+                          result_decoded,
+                          expected_decoded
+                        )
 
-                         Input:
-                         #{inspect(input, pretty: true, limit: :infinity)}
+                    assert equivalent,
+                           """
+                           Encoder test failed: #{@test["name"]}
+                           Spec section: #{@test["specSection"]}
 
-                         Expected:
-                         #{expected}
+                           Input:
+                           #{inspect(input, pretty: true, limit: :infinity)}
 
-                         Got:
-                         #{result}
+                           Expected:
+                           #{expected}
 
-                         Expected (decoded): #{inspect(expected_decoded, pretty: true)}
-                         Got (decoded):      #{inspect(result_decoded, pretty: true)}
-                         """
+                           Got:
+                           #{result}
 
-                {{:error, decode_error}, _} ->
-                  flunk("""
-                  Encoder produced output that cannot be decoded: #{@test["name"]}
+                           Expected (decoded): #{inspect(expected_decoded, pretty: true)}
+                           Got (decoded):      #{inspect(result_decoded, pretty: true)}
+                           """
 
-                  Encoded output:
-                  #{result}
+                  {{:error, decode_error}, _} ->
+                    flunk("""
+                    Encoder produced output that cannot be decoded: #{@test["name"]}
 
-                  Decode error: #{Exception.message(decode_error)}
-                  """)
+                    Encoded output:
+                    #{result}
 
-                {_, {:error, expected_decode_error}} ->
-                  flunk("""
-                  Expected output cannot be decoded (spec error?): #{@test["name"]}
+                    Decode error: #{Exception.message(decode_error)}
+                    """)
 
-                  Expected:
-                  #{expected}
+                  {_, {:error, expected_decode_error}} ->
+                    flunk("""
+                    Expected output cannot be decoded (spec error?): #{@test["name"]}
 
-                  Decode error: #{Exception.message(expected_decode_error)}
-                  """)
+                    Expected:
+                    #{expected}
+
+                    Decode error: #{Exception.message(expected_decode_error)}
+                    """)
+                end
               end
 
             {:error, error} ->

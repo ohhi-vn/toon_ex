@@ -205,7 +205,8 @@ defmodule ToonEx.EdgeCasesTest do
 
     test "length_marker prefix added to empty array" do
       {:ok, r} = ToonEx.encode(%{"x" => []}, length_marker: "#")
-      assert r == "x[#0]:"
+      # §9.1: the empty-array value form has no header, so no length marker appears
+      assert r == "x: []"
     end
 
     # length_marker is an encoder-only decoration. The standard decoder does

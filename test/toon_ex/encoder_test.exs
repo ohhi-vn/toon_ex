@@ -110,7 +110,8 @@ defmodule ToonEx.EncoderTest do
 
     test "encodes empty list" do
       result = ToonEx.Encoder.encode([], [])
-      assert result == "[0]:"
+      # §9.1: the empty-array value form
+      assert result == "[]"
     end
 
     test "encodes list with custom delimiter" do

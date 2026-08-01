@@ -401,7 +401,8 @@ defmodule ToonEx.RoundtripTest do
   describe "encoder format edge cases" do
     test "empty list encodes with zero-length header" do
       result = ToonEx.encode!(%{"items" => []})
-      assert result =~ "items[0]:"
+      # §9.1: empty arrays use the `key: []` value form
+      assert result =~ "items: []"
     end
 
     test "nested empty structures" do
@@ -410,7 +411,7 @@ defmodule ToonEx.RoundtripTest do
 
       # Empty list inside map
       result = ToonEx.encode!(%{"items" => []})
-      assert result =~ "[0]:"
+      assert result =~ "items: []"
     end
 
     test "list of maps with same keys uses tabular format" do

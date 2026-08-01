@@ -585,7 +585,8 @@ defmodule ToonEx.SpecComplianceTest do
     test "empty array headers have length 0" do
       data = %{"tags" => []}
       toon = ToonEx.encode!(data)
-      assert String.contains?(toon, "tags[0]:")
+      # §9.1: empty arrays use the `key: []` value form
+      assert String.contains?(toon, "tags: []")
     end
 
     test "tabular array headers include field list" do

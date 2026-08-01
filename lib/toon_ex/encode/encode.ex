@@ -189,9 +189,9 @@ defmodule ToonEx.Encode do
 
   # Encode root-level array per TOON spec Section 5
   # Performance: Single-pass array type detection instead of multiple Enum traversals
-  defp encode_root_array([], _depth, opts) do
-    length_marker = format_length_marker(0, opts.length_marker)
-    ["[", length_marker, "]:"]
+  defp encode_root_array([], _depth, _opts) do
+    # Empty root array uses the `[]` form (§9.1)
+    [@open_bracket, @close_bracket]
   end
 
   defp encode_root_array(data, depth, opts) do
@@ -426,23 +426,40 @@ defmodule ToonEx.Encode do
 
           cond do
             is_map(v) ->
-              # Header line: "- key:" or "  key:"
-              header =
-                if needs_marker,
-                  do: [
-                    @list_item_prefix,
-                    encoded_key,
-                    @colon
-                  ],
-                  else: [opts.indent_string, encoded_key, @colon]
+              case Utils.detect_keyed_tabular(v) do
+                {:ok, _} ->
+                  # Keyed tabular on hyphen line when first field (§9.5, §10)
+                  [header | rows] = Arrays.encode_keyed(k, v, opts)
 
-              # Nested lines from Objects, each indented two extra levels (one for
-              # the list item, one for the nested object depth).
-              nested_lines =
-                Objects.encode_to_lines(v, 0, opts)
-                |> Enum.map(&[opts.indent_string, opts.indent_string, &1])
+                  marked_header =
+                    if needs_marker,
+                      do: [@list_item_prefix, header],
+                      else: [opts.indent_string, header]
 
-              [header | nested_lines]
+                  indented_rows =
+                    Enum.map(rows, &[opts.indent_string, opts.indent_string, &1])
+
+                  [marked_header | indented_rows]
+
+                :error ->
+                  # Header line: "- key:" or "  key:"
+                  header =
+                    if needs_marker,
+                      do: [
+                        @list_item_prefix,
+                        encoded_key,
+                        @colon
+                      ],
+                      else: [opts.indent_string, encoded_key, @colon]
+
+                  # Nested lines from Objects, each indented two extra levels (one for
+                  # the list item, one for the nested object depth).
+                  nested_lines =
+                    Objects.encode_to_lines(v, 0, opts)
+                    |> Enum.map(&[opts.indent_string, opts.indent_string, &1])
+
+                  [header | nested_lines]
+              end
 
             is_list(v) ->
               # ← encode, not encode_list

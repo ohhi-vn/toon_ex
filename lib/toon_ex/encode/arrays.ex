@@ -54,41 +54,35 @@ defmodule ToonEx.Encode.Arrays do
   """
   @spec encode(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode(key, list, depth, opts) when is_list(list) do
-    # Single-pass array type detection - delegates to Utils
-    case Utils.detect_array_type(list) do
-      {:primitive, length} ->
-        if length == 0 do
-          encode_empty(key, opts.length_marker)
-        else
-          encode_inline(key, list, opts)
-        end
+    if list == [] do
+      encode_empty(key, opts.length_marker)
+    else
+      case Utils.detect_tabular_fields(list) do
+        {:ok, fields} ->
+          encode_tabular_with_fields(key, list, fields, depth, opts)
 
-      {:tabular, _length, keys} ->
-        encode_tabular_with_keys(key, list, keys, depth, opts)
+        :error ->
+          case Utils.detect_array_type(list) do
+            {:primitive, _length} ->
+              encode_inline(key, list, opts)
 
-      {:list, _length} ->
-        encode_list(key, list, depth, opts)
+            _ ->
+              encode_list(key, list, depth, opts)
+          end
+      end
     end
   end
 
-  # Encode tabular array with pre-computed keys from single-pass detection
-  defp encode_tabular_with_keys(key, list, keys, _depth, opts) do
+  # Encode tabular array with pre-computed field tree from single-pass detection.
+  # Supports nested field groups (§9.3): a column of nested-uniform objects is
+  # rendered as `field{sub1,sub2}` and its leaf values are flattened in
+  # depth-first order into each row.
+  defp encode_tabular_with_fields(key, list, fields, _depth, opts) do
     length_marker = format_length_marker(length(list), opts.length_marker)
     encoded_key = Strings.encode_key(key)
 
-    # Apply key_order if provided
-    final_keys =
-      case Map.get(opts, :key_order) do
-        key_order when is_list(key_order) and key_order != [] ->
-          key_set = MapSet.new(keys)
-          ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
-          if length(ordered) == length(keys), do: ordered, else: keys
-
-        _ ->
-          keys
-      end
-
-    fields = do_intersperse_map(final_keys, &Strings.encode_key/1, opts.delimiter, [])
+    final_fields = apply_key_order(fields, Map.get(opts, :key_order))
+    fields_iodata = encode_field_tree(final_fields, opts)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
     header = [
@@ -98,16 +92,18 @@ defmodule ToonEx.Encode.Arrays do
       delimiter_marker,
       @close_bracket,
       @open_brace,
-      fields,
+      fields_iodata,
       @close_brace,
       @colon
     ]
 
+    paths = Utils.leaf_paths(final_fields)
+
     rows =
       Enum.map(list, fn obj ->
         do_intersperse_map(
-          final_keys,
-          fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end,
+          paths,
+          fn path -> Primitives.encode(Utils.value_at_path(obj, path), opts.delimiter) end,
           opts.delimiter,
           []
         )
@@ -117,20 +113,89 @@ defmodule ToonEx.Encode.Arrays do
   end
 
   @doc """
-  Encodes an empty array.
+  Encodes an object in keyed tabular form (§9.5).
+
+  Requires the caller to already have confirmed `Utils.detect_keyed_tabular/1`
+  succeeds on `map`. Returns `[header | entry_rows]` without base indentation;
+  the caller pushes the header at its depth and each entry row one level deeper.
+
+  When `key` is `nil`, emits a keyless keyed header (`[N:]{...}:`), valid only
+  at the root (§5).
+  """
+  @spec encode_keyed(String.t() | nil, map(), map()) :: [iodata()]
+  def encode_keyed(nil, map, opts) do
+    {:ok, fields} = Utils.detect_keyed_tabular(map)
+    build_keyed_header(nil, map, fields, opts)
+  end
+
+  def encode_keyed(key, map, opts) when is_binary(key) do
+    {:ok, fields} = Utils.detect_keyed_tabular(map)
+    build_keyed_header(Strings.encode_key(key), map, fields, opts)
+  end
+
+  # Same as encode_keyed/3 but with a pre-encoded key iodata (list-item paths).
+  def encode_keyed_encoded(encoded_key, map, opts) do
+    {:ok, fields} = Utils.detect_keyed_tabular(map)
+    build_keyed_header(encoded_key, map, fields, opts)
+  end
+
+  defp build_keyed_header(encoded_key, map, fields, opts) do
+    length_marker = format_length_marker(map_size(map), opts.length_marker)
+    delimiter_marker = format_delimiter_marker(opts.delimiter)
+
+    fields_iodata =
+      case Map.get(opts, :key_order) do
+        key_order when is_list(key_order) and key_order != [] ->
+          encode_field_tree(apply_key_order(fields, key_order), opts)
+
+        _ ->
+          encode_field_tree(fields, opts)
+      end
+
+    header = [
+      encoded_key || [],
+      @open_bracket,
+      length_marker,
+      @colon,
+      delimiter_marker,
+      @close_bracket,
+      @open_brace,
+      fields_iodata,
+      @close_brace,
+      @colon
+    ]
+
+    paths = Utils.leaf_paths(fields)
+
+    rows =
+      Enum.map(map, fn {entry_key, entry} ->
+        cells =
+          do_intersperse_map(
+            paths,
+            fn path -> Primitives.encode(Utils.value_at_path(entry, path), opts.delimiter) end,
+            opts.delimiter,
+            []
+          )
+
+        [Strings.encode_key(entry_key), @colon_space, cells]
+      end)
+
+    [header | rows]
+  end
+
+  @doc """
+  Encodes an empty array in object-field position using the `key: []` form (§9.1).
 
   ## Examples
 
       iex> result = ToonEx.Encode.Arrays.encode_empty("items", nil)
       iex> IO.iodata_to_binary(result)
-      "items[0]:"
+      "items: []"
   """
   @spec encode_empty(String.t(), String.t() | nil) ::
           nonempty_list(nonempty_list(binary() | nonempty_list(binary())))
-  def encode_empty(key, length_marker \\ nil) do
-    encoded_key = Strings.encode_key(key)
-    lm = format_length_marker(0, length_marker)
-    [[encoded_key, @open_bracket, lm, @close_bracket, @colon]]
+  def encode_empty(key, _length_marker \\ nil) do
+    [[Strings.encode_key(key), @colon_space, @open_bracket, @close_bracket]]
   end
 
   @doc """
@@ -183,26 +248,20 @@ defmodule ToonEx.Encode.Arrays do
   """
   @spec encode_tabular(String.t(), list(), non_neg_integer(), map()) :: [iodata()]
   def encode_tabular(key, list, _depth, opts) do
-    # Extract keys from first map (already known to be tabular from caller)
-    keys =
-      case list do
-        [first | _] ->
-          map_keys = Map.keys(first)
-          key_order = Map.get(opts, :key_order)
+    case list do
+      [] ->
+        encode_empty(key, opts.length_marker)
 
-          if is_list(key_order) and not Enum.empty?(key_order) do
-            key_set = MapSet.new(map_keys)
-            ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
-            if length(ordered) == length(map_keys), do: ordered, else: Enum.sort(map_keys)
-          else
-            Enum.sort(map_keys)
-          end
+      _ ->
+        case Utils.detect_tabular_fields(list) do
+          {:ok, fields} ->
+            encode_tabular_with_fields(key, list, fields, 0, opts)
 
-        [] ->
-          []
-      end
-
-    encode_tabular_with_keys(key, list, keys, 0, opts)
+          :error ->
+            # Fallback: encode as list form
+            encode_list(key, list, 0, opts)
+        end
+    end
   end
 
   @doc """
@@ -247,6 +306,38 @@ defmodule ToonEx.Encode.Arrays do
   defp do_prepend_reversed([h | t], acc), do: do_prepend_reversed(t, [h | acc])
 
   # Private helpers
+
+  # Render a field tree as iodata, interspersing the active delimiter.
+  # A group entry becomes `key{sub1,sub2}`.
+  defp encode_field_tree(fields, opts) do
+    do_intersperse_map(fields, &encode_field_entry(&1, opts), opts.delimiter, [])
+  end
+
+  defp encode_field_entry({:leaf, key}, _opts), do: Strings.encode_key(key)
+
+  defp encode_field_entry({:group, key, children}, opts) do
+    [Strings.encode_key(key), @open_brace, encode_field_tree(children, opts), @close_brace]
+  end
+
+  # Reorder the top-level fields according to key_order when it covers every
+  # top-level field; otherwise keep the detected (first-object) order.
+  defp apply_key_order(fields, key_order)
+       when is_list(key_order) and key_order != [] do
+    top_keys = Enum.map(fields, fn {:leaf, k} -> k; {:group, k, _} -> k end)
+    key_set = MapSet.new(top_keys)
+    ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
+
+    if length(ordered) == length(fields) do
+      Enum.map(ordered, fn k -> Enum.find(fields, fn f -> field_key(f) == k end) end)
+    else
+      fields
+    end
+  end
+
+  defp apply_key_order(fields, _key_order), do: fields
+
+  defp field_key({:leaf, k}), do: k
+  defp field_key({:group, k, _}), do: k
 
   defp format_length_marker(length, nil), do: Integer.to_string(length)
 
@@ -429,15 +520,24 @@ defmodule ToonEx.Encode.Arrays do
     end
   end
 
-  # Encode map values
+  # Encode map values (keyed tabular on hyphen line if eligible, else nested)
   defp encode_value_with_optional_marker(key, v, needs_marker, depth, opts) when is_map(v) do
-    header_line = [key, @colon]
-    nested_result = encode_nested_map(v, depth, opts)
+    case Utils.detect_keyed_tabular(v) do
+      {:ok, _} ->
+        [header | rows] = encode_keyed_encoded(key, v, opts)
+        header_line = apply_marker(header, needs_marker, opts)
+        data_lines = Enum.map(rows, fn row -> [opts.indent_string, opts.indent_string, row] end)
+        [header_line | data_lines]
 
-    if needs_marker do
-      [[@list_item_prefix, header_line] | nested_result]
-    else
-      [[opts.indent_string, header_line] | nested_result]
+      :error ->
+        header_line = [key, @colon]
+        nested_result = encode_nested_map(v, depth, opts)
+
+        if needs_marker do
+          [[@list_item_prefix, header_line] | nested_result]
+        else
+          [[opts.indent_string, header_line] | nested_result]
+        end
     end
   end
 
@@ -452,9 +552,8 @@ defmodule ToonEx.Encode.Arrays do
     [key, @colon_space, Primitives.encode(value, opts.delimiter)]
   end
 
-  defp build_empty_array_line(key, opts) do
-    lm = format_length_marker(0, opts.length_marker)
-    [Strings.encode_key(key), @open_bracket, lm, @close_bracket, @colon]
+  defp build_empty_array_line(key, _opts) do
+    [Strings.encode_key(key), @colon_space, @open_bracket, @close_bracket]
   end
 
   defp build_inline_array_line(key, values, opts) do
@@ -490,26 +589,29 @@ defmodule ToonEx.Encode.Arrays do
   defp encode_complex_array_value(key, v, needs_marker, opts) do
     depth = 0
 
-    case Utils.detect_array_type(v) do
-      {:tabular, _length, keys} ->
-        encode_tabular_array_value_with_keys(key, v, keys, needs_marker, depth, opts)
+    case Utils.detect_tabular_fields(v) do
+      {:ok, fields} ->
+        encode_tabular_array_value_with_fields(key, v, fields, needs_marker, depth, opts)
 
-      {:list, _length} ->
-        encode_list_array_value(key, v, needs_marker, depth, opts)
+      :error ->
+        case Utils.detect_array_type(v) do
+          {:list, _length} ->
+            encode_list_array_value(key, v, needs_marker, depth, opts)
 
-      {:primitive, _length} ->
-        # Shouldn't happen for complex arrays, but handle gracefully
-        encode_other_array_value(key, v, needs_marker, depth, opts)
+          _ ->
+            # Shouldn't happen for complex arrays, but handle gracefully
+            encode_other_array_value(key, v, needs_marker, depth, opts)
+        end
     end
   end
 
-  # Encode tabular array value with pre-computed keys (avoids re-detection)
-  defp encode_tabular_array_value_with_keys(key, v, keys, needs_marker, _depth, opts) do
+  # Encode tabular array value with pre-computed field tree (avoids re-detection)
+  defp encode_tabular_array_value_with_fields(key, v, fields, needs_marker, _depth, opts) do
     length_marker = format_length_marker(length(v), opts.length_marker)
     encoded_key = Strings.encode_key(key)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
 
-    fields = do_intersperse_map(keys, &Strings.encode_key/1, opts.delimiter, [])
+    fields_iodata = encode_field_tree(fields, opts)
 
     header = [
       encoded_key,
@@ -518,16 +620,18 @@ defmodule ToonEx.Encode.Arrays do
       delimiter_marker,
       @close_bracket,
       @open_brace,
-      fields,
+      fields_iodata,
       @close_brace,
       @colon
     ]
 
+    paths = Utils.leaf_paths(fields)
+
     rows =
       Enum.map(v, fn obj ->
         do_intersperse_map(
-          keys,
-          fn k -> Primitives.encode(Map.get(obj, k), opts.delimiter) end,
+          paths,
+          fn path -> Primitives.encode(Utils.value_at_path(obj, path), opts.delimiter) end,
           opts.delimiter,
           []
         )

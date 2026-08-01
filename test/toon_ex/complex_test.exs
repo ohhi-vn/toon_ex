@@ -164,12 +164,14 @@ defmodule ToonEx.ComplexTest do
       assert toon =~ "]{"
     end
 
-    test "empty tags array encoded as [0]:", %{toon: toon} do
-      assert toon =~ "tags[0]:"
+    test "empty tags array encoded in empty-array value form", %{toon: toon} do
+      # §9.1: empty arrays use the `key: []` value form
+      assert toon =~ "tags: []"
     end
 
-    test "empty employees array encoded as [0]:", %{toon: toon} do
-      assert toon =~ "employees[0]:"
+    test "empty employees array encoded in empty-array value form", %{toon: toon} do
+      # §9.1: empty arrays use the `key: []` value form
+      assert toon =~ "employees: []"
     end
 
     test "metadata slack_channel value is present and quoted", %{toon: toon} do

@@ -273,9 +273,10 @@ defmodule ToonEx.Encode.Strings do
   # Safe ASCII (printable) — pass through
   defp escape_byte(_byte), do: nil
 
-  # Format a control character byte as 4-digit uppercase hex: U+001F → "001F"
+  # Format a control character byte as 4-digit lowercase hex: U+001F → "001f"
+  # (Integer.to_string/2 emits uppercase for base 16; the spec uses lowercase)
   defp escape_control(byte) do
-    hex = Integer.to_string(byte, 16) |> String.upcase()
+    hex = Integer.to_string(byte, 16) |> String.downcase()
     String.pad_leading(hex, 4, "0")
   end
 
@@ -370,6 +371,7 @@ defmodule ToonEx.Encode.Strings do
   # First character: must be A-Z, a-z, or _
   defp do_safe_key_first?(c) when c in ?A..?Z, do: true
   defp do_safe_key_first?(c) when c in ?a..?z, do: true
+  defp do_safe_key_first?(?_), do: true
   defp do_safe_key_first?(_), do: false
 
   # Remaining characters: A-Z, a-z, 0-9, _, or .
@@ -479,14 +481,10 @@ defmodule ToonEx.Encode.Strings do
     String.contains?(string, delimiter)
   end
 
-  # Single-pass binary scan for control characters
+  # Single-pass binary scan for control characters (U+0000–U+001F)
   @compile {:inline, do_contains_control_chars?: 1}
   defp do_contains_control_chars?(<<>>), do: false
-  defp do_contains_control_chars?(<<?\n, _rest::binary>>), do: true
-  defp do_contains_control_chars?(<<?\r, _rest::binary>>), do: true
-  defp do_contains_control_chars?(<<?\t, _rest::binary>>), do: true
-  defp do_contains_control_chars?(<<?\b, _rest::binary>>), do: true
-  defp do_contains_control_chars?(<<?\f, _rest::binary>>), do: true
+  defp do_contains_control_chars?(<<byte, _rest::binary>>) when byte < 32, do: true
   defp do_contains_control_chars?(<<_byte, rest::binary>>), do: do_contains_control_chars?(rest)
 
   # Performance: Binary pattern matching instead of String.starts_with?
