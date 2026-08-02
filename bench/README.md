@@ -18,7 +18,23 @@ mix run bench/decode/large_size.exs
 
 # Compare token/byte efficiency
 mix run bench/size/token_count.exs
+
+# BTOON benchmarks
+mix run bench/btoon/encode.exs
+mix run bench/btoon/decode.exs
+mix run bench/btoon/roundtrip.exs
+mix run bench/btoon/size.exs
 ```
+
+## BTOON Benchmarks (`bench/btoon/`)
+
+Compares the BTOON binary codec (`ToonEx.Btoon`) against the TOON text format
+(`ToonEx`) and standard JSON (`Jason`).
+
+- **encode**: BTOON binary vs TOON text vs JSON encoding
+- **decode**: BTOON binary vs TOON text vs JSON decoding
+- **roundtrip**: Encode + decode in a single pass for each format
+- **size**: Byte-size comparison of BTOON vs TOON vs JSON output
 
 ## Benchmark Categories
 

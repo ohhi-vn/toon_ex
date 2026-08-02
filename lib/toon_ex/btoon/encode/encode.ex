@@ -1,0 +1,681 @@
+defmodule ToonEx.Btoon.Encode do
+  @moduledoc """
+  BTOON encoder.
+
+  Encodes the BTOON data model (`ToonEx.Btoon.Types.encodable/0`) into the binary
+  wire format defined by the BTOON specification:
+
+    * Envelope: `"BTON"` magic, version, flags, reserved, optional string
+      table, optional embedded schema, then an 8-byte-aligned body.
+    * Value tags (`ToonEx.Btoon.Constants`) with inline `SmallInt` for integers in
+      `-32..95` and fixed-width little-endian integers/floats otherwise.
+    * Strings deduplicated against a session dictionary and a per-message
+      string table via `StringRef`.
+    * Homogeneous numeric lists encoded as `TypedArray` and homogeneous
+      object lists as columnar `ObjectTable`, both with alignment padding
+      for zero-copy decoders.
+    * Optional schema mode emitting `SchemaID` + tagless fixed-width values.
+
+  ## Determinism
+
+  Every input maps to exactly one byte sequence: map keys are sorted, strings
+  are added to the per-message table in first-encounter order, and numeric
+  lists use `ToonEx.Btoon.ElementType.detect_type/1` to pick a single legal type.
+
+  ## API
+
+      iex> ToonEx.Btoon.Encode.encode!(%{"name" => "Alice", "age" => 30})
+      <<66, 84, 79, 78, 1, 4, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 97, 103, 101, 4, 0,
+        0, 0, 110, 97, 109, 101, 5, 0, 0, 0, 65, 108, 105, 99, 101, 0, 0, 0, 0, 10,
+        2, 0, 0, 0, 11, 64, 94, 11, 65, 11, 66>>
+  """
+
+  alias ToonEx.Btoon.{Constants, ElementType, EncodeError, Schema}
+  alias ToonEx.Btoon.Encode.Options
+
+  @compile {:inline,
+            pad_to: 2,
+            zeroes: 1,
+            encode_int_value: 1,
+            encode_binary: 1,
+            encode_string_ref: 1,
+            encode_string: 2,
+            encode_value: 3,
+            do_encode_items: 5,
+            do_encode_pairs: 6,
+            do_encode_pairs: 7,
+            do_encode_columns: 6,
+            do_encode_fields: 6,
+            encode_field: 4,
+            encode_fixed_int: 3}
+
+  # ── Public API ──────────────────────────────────────────────────────────────
+
+  @doc """
+  Encodes data to the BTOON binary format.
+
+  Returns `{:ok, binary}` or `{:error, ToonEx.Btoon.EncodeError.t()}`.
+  """
+  @spec encode(ToonEx.Btoon.Types.encodable(), keyword()) ::
+          {:ok, binary()} | {:error, ToonEx.Btoon.EncodeError.t()}
+  def encode(data, opts \\ []) do
+    case Options.validate(opts) do
+      {:ok, validated} ->
+        try do
+          {:ok, do_encode(data, validated)}
+        rescue
+          e in EncodeError -> {:error, e}
+          e -> {:error, EncodeError.exception(message: Exception.message(e), value: data)}
+        end
+
+      {:error, message} ->
+        {:error, EncodeError.exception(message: message)}
+    end
+  end
+
+  @doc """
+  Encodes data to the BTOON binary format, raising on error.
+  """
+  @spec encode!(ToonEx.Btoon.Types.encodable(), keyword()) :: binary()
+  def encode!(data, opts \\ []) do
+    validated = Options.validate!(opts)
+    do_encode(data, validated)
+  rescue
+    e in EncodeError -> reraise e, __STACKTRACE__
+    e -> raise EncodeError, message: Exception.message(e), value: data
+  end
+
+  @doc """
+  Encodes data to BTOON iodata without flattening to a single binary.
+  """
+  @spec encode_to_iodata!(ToonEx.Btoon.Types.encodable(), keyword()) :: iodata()
+  def encode_to_iodata!(data, opts \\ []) do
+    validated = Options.validate!(opts)
+    ctx = new_ctx(validated)
+    {body, _size, ctx} = encode_body(data, validated, ctx)
+    assemble_iodata(validated, ctx, body)
+  end
+
+  # ── Core encode pipeline ────────────────────────────────────────────────────
+
+  defp do_encode(data, opts) do
+    ctx = new_ctx(opts)
+    {body, _size, ctx} = encode_body(data, opts, ctx)
+    assemble(opts, ctx, body)
+  end
+
+  defp encode_body(data, %{schema: nil}, ctx), do: encode_value(data, 0, ctx)
+
+  defp encode_body(data, %{schema: schema}, ctx) when is_map(data) do
+    encode_schema_body(schema, data, ctx)
+  end
+
+  defp encode_body(_data, %{schema: schema}, _ctx) do
+    raise EncodeError, message: "schema mode requires a map value", value: schema
+  end
+
+  # ── Assembly ────────────────────────────────────────────────────────────
+
+  defp assemble(opts, ctx, body) do
+    table_entries = :lists.reverse(ctx.table_rev)
+    do_assemble(opts, table_entries, body)
+  end
+
+  defp assemble_iodata(opts, ctx, body) do
+    table_entries = :lists.reverse(ctx.table_rev)
+    do_assemble(opts, table_entries, body)
+  end
+
+  defp do_assemble(opts, table_entries, body) do
+    {table_iodata, table_size} =
+      case table_entries do
+        [] -> {[], 0}
+        _ -> {build_table(table_entries), 4 + table_bytes(table_entries)}
+      end
+
+    {schema_iodata, schema_size} =
+      case opts.schema do
+        nil -> {[], 0}
+        schema -> {build_schema(schema), schema_bytes(schema)}
+      end
+
+    flags = compute_flags(opts, table_entries)
+
+    header =
+      <<Constants.magic()::binary, Constants.version(), flags, Constants.reserved()::16-little>>
+
+    pos = Constants.header_size()
+    pos = pos + table_size
+    pad1 = pad_to(pos, 8)
+    pos = pos + pad1 + schema_size
+    pad2 = pad_to(pos, 8)
+
+    [
+      header,
+      table_iodata,
+      zeroes(pad1),
+      schema_iodata,
+      zeroes(pad2),
+      body
+    ]
+    |> IO.iodata_to_binary()
+  end
+
+  defp build_table(entries) do
+    [<<length(entries)::32-little>> | Enum.map(entries, &[<<byte_size(&1)::32-little>>, &1])]
+  end
+
+  defp table_bytes(entries), do: Enum.reduce(entries, 0, &(byte_size(&1) + 4 + &2))
+
+  defp build_schema(%Schema{id: id, name: name, fields: fields}) do
+    fields_iodata =
+      Enum.map(fields, fn %{name: field_name, type: type} ->
+        case ElementType.type_byte(type) do
+          nil -> raise EncodeError, message: "invalid schema field type", value: type
+          byte -> [<<byte_size(field_name)::32-little>>, field_name, <<byte>>]
+        end
+      end)
+
+    [
+      <<id::32-little>>,
+      <<byte_size(name)::32-little>>,
+      name,
+      <<length(fields)::32-little>>,
+      fields_iodata
+    ]
+  end
+
+  defp schema_bytes(%Schema{name: name, fields: fields}) do
+    4 + 4 + byte_size(name) + 4 +
+      Enum.reduce(fields, 0, fn %{name: field_name}, acc -> byte_size(field_name) + 5 + acc end)
+  end
+
+  defp compute_flags(opts, table_entries) do
+    flags =
+      if opts.dictionary && ToonEx.Btoon.Dictionary.size(opts.dictionary) > 0 do
+        Constants.flag_session_dictionary()
+      else
+        0
+      end
+
+    flags =
+      if table_entries != [] do
+        Bitwise.bor(flags, Constants.flag_string_table())
+      else
+        flags
+      end
+
+    if opts.schema do
+      Bitwise.bor(flags, Constants.flag_schema())
+    else
+      flags
+    end
+  end
+
+  # ── Context ─────────────────────────────────────────────────────────────────
+
+  defmodule Ctx do
+    @moduledoc false
+    # immutable fields
+    defstruct config: nil,
+              table_ids: %{},
+              table_rev: [],
+              next_table_id: 0
+  end
+
+  defp new_ctx(opts) do
+    dictionary = opts.dictionary || ToonEx.Btoon.Dictionary.new([])
+    entries = ToonEx.Btoon.Dictionary.entries(dictionary)
+
+    dict_map = Enum.with_index(entries) |> Map.new()
+
+    config = %{
+      dictionary: dict_map,
+      session_size: length(entries),
+      string_table: opts.string_table,
+      typed_arrays: opts.typed_arrays,
+      object_tables: opts.object_tables
+    }
+
+    %Ctx{
+      config: config,
+      table_ids: %{},
+      table_rev: [],
+      next_table_id: length(entries)
+    }
+  end
+
+  defp get_config(ctx, key), do: Map.fetch!(ctx.config, key)
+
+  # ── Value dispatch ──────────────────────────────────────────────────────────
+
+  # Returns {iodata, bytes_written, ctx}. `offset` is the byte offset of the
+  # value's first byte relative to the start of the body (0 at body start).
+
+  defp encode_value(nil, _offset, ctx), do: {<<Constants.tag_null()>>, 1, ctx}
+  defp encode_value(false, _offset, ctx), do: {<<Constants.tag_false()>>, 1, ctx}
+  defp encode_value(true, _offset, ctx), do: {<<Constants.tag_true()>>, 1, ctx}
+
+  defp encode_value(value, _offset, ctx) when is_integer(value), do: encode_int(value, ctx)
+
+  defp encode_value(value, _offset, ctx) when is_float(value) do
+    encode_float(value, ctx)
+  end
+
+  defp encode_value(value, _offset, ctx) when is_binary(value), do: encode_string(value, ctx)
+
+  defp encode_value(%ToonEx.Btoon.Binary{data: data}, _offset, ctx) do
+    {iodata, size} = encode_binary(data)
+    {iodata, size, ctx}
+  end
+
+  defp encode_value(%ToonEx.Btoon.TypedArray{} = typed_array, offset, ctx) do
+    encode_typed_array(typed_array, offset, ctx)
+  end
+
+  defp encode_value(%ToonEx.Btoon.ObjectTable{} = object_table, offset, ctx) do
+    encode_object_table(object_table, offset, ctx)
+  end
+
+  defp encode_value(value, offset, ctx) when is_list(value) do
+    encode_list(value, offset, ctx)
+  end
+
+  defp encode_value(%{__struct__: struct} = value, _offset, _ctx) do
+    raise EncodeError, message: "cannot encode value of type #{inspect(struct)}", value: value
+  end
+
+  defp encode_value(value, offset, ctx) when is_map(value) do
+    encode_object(value, offset, ctx)
+  end
+
+  defp encode_value(value, _offset, ctx) when is_atom(value) do
+    encode_string(Atom.to_string(value), ctx)
+  end
+
+  defp encode_value(value, _offset, _ctx) do
+    raise EncodeError, message: "cannot encode value", value: value
+  end
+
+  # ── Integers ────────────────────────────────────────────────────────────────
+
+  defp encode_int(value, ctx) do
+    {iodata, size} = encode_int_value(value)
+    {iodata, size, ctx}
+  end
+
+  # Shared integer encoding: SmallInt (bare byte 0x20..0x9F), Int32, Int64.
+  defp encode_int_value(value) do
+    cond do
+      value >= -32 and value <= 95 ->
+        {<<value + 64::8>>, 1}
+
+      value >= -2_147_483_648 and value <= 2_147_483_647 ->
+        {<<Constants.tag_int32(), value::32-little-signed>>, 5}
+
+      true ->
+        {<<Constants.tag_int64(), value::64-little-signed>>, 9}
+    end
+  end
+
+  # ── Floats ──────────────────────────────────────────────────────────────────
+
+  defp encode_float(value, ctx) do
+    if ElementType.f32_exact?(value) do
+      {<<Constants.tag_float32(), value::32-little-float>>, 5, ctx}
+    else
+      {<<Constants.tag_float64(), value::64-little-float>>, 9, ctx}
+    end
+  end
+
+  # ── Strings & references ────────────────────────────────────────────────────
+
+  # Strings deduplicate against the session dictionary first, then the
+  # per-message string table (when :auto). Both keys and string values use
+  # this path, so a ref id identifies one entry in the combined dictionary
+  # (session entries first, then per-message entries).
+
+  defp encode_string(string, ctx) do
+    case Map.fetch(get_config(ctx, :dictionary), string) do
+      {:ok, id} ->
+        encode_string_ref_tuple(id, ctx)
+
+      :error ->
+        if get_config(ctx, :string_table) == :off do
+          {<<Constants.tag_string(), byte_size(string)::32-little, string::binary>>,
+           5 + byte_size(string), ctx}
+        else
+          case Map.fetch(ctx.table_ids, string) do
+            {:ok, id} ->
+              encode_string_ref_tuple(id, ctx)
+
+            :error ->
+              id = ctx.next_table_id
+
+              ctx = %{
+                ctx
+                | table_ids: Map.put(ctx.table_ids, string, id),
+                  table_rev: [string | ctx.table_rev],
+                  next_table_id: id + 1
+              }
+
+              encode_string_ref_tuple(id, ctx)
+          end
+        end
+    end
+  end
+
+  defp encode_string_ref(id) do
+    {iodata, size} = encode_int_value(id)
+    {[<<Constants.tag_string_ref()>> | iodata], size + 1}
+  end
+
+  defp encode_string_ref_tuple(id, ctx) do
+    {iodata, size} = encode_string_ref(id)
+    {iodata, size, ctx}
+  end
+
+  defp encode_binary(data) do
+    {<<Constants.tag_binary(), byte_size(data)::32-little, data::binary>>, 5 + byte_size(data)}
+  end
+
+  # ── Arrays ──────────────────────────────────────────────────────────────────
+
+  defp encode_list(list, offset, ctx) do
+    if get_config(ctx, :typed_arrays) do
+      case ElementType.detect_type(list) do
+        {:ok, type} ->
+          encode_typed_array(
+            %ToonEx.Btoon.TypedArray{type: type, data: ElementType.list_to_buffer(type, list)},
+            offset,
+            ctx
+          )
+
+        :error ->
+          encode_list_fallback(list, offset, ctx)
+      end
+    else
+      encode_list_fallback(list, offset, ctx)
+    end
+  end
+
+  defp encode_list_fallback(list, offset, ctx) do
+    if get_config(ctx, :object_tables) do
+      case ElementType.detect_object_table(list) do
+        {:ok, names, types} ->
+          columns =
+            Enum.zip(names, types)
+            |> Enum.map(fn {name, type} ->
+              %ToonEx.Btoon.ObjectTable.Column{
+                name: name,
+                type: type,
+                data: ElementType.list_to_buffer(type, Enum.map(list, &Map.fetch!(&1, name)))
+              }
+            end)
+
+          encode_object_table(
+            %ToonEx.Btoon.ObjectTable{row_count: length(list), columns: columns},
+            offset,
+            ctx
+          )
+
+        :error ->
+          encode_array_general(list, offset, ctx)
+      end
+    else
+      encode_array_general(list, offset, ctx)
+    end
+  end
+
+  defp encode_array_general(list, offset, ctx) do
+    {rev_iodata, size, ctx} = do_encode_items(list, offset + 5, ctx, [], 0)
+
+    {[<<Constants.tag_array(), length(list)::32-little>> | :lists.reverse(rev_iodata)], 5 + size,
+     ctx}
+  end
+
+  defp do_encode_items([], _offset, ctx, acc, size), do: {acc, size, ctx}
+
+  defp do_encode_items([item | rest], offset, ctx, acc, size) do
+    {iodata, item_size, ctx} = encode_value(item, offset, ctx)
+    do_encode_items(rest, offset + item_size, ctx, [iodata | acc], size + item_size)
+  end
+
+  # ── Objects ─────────────────────────────────────────────────────────────────
+
+  defp encode_object(map, offset, ctx) do
+    keys = map |> Map.keys()
+
+    if all_binary_keys?(keys) do
+      sorted = Enum.sort(keys)
+      {rev_iodata, size, ctx} = do_encode_pairs(sorted, map, offset + 5, ctx, [], 0)
+
+      {[
+         <<Constants.tag_object(), length(sorted)::32-little>> | :lists.reverse(rev_iodata)
+       ], 5 + size, ctx}
+    else
+      # Stringify keys and keep the original key for value lookup (matching the
+      # pre-normalization semantics: later duplicates overwrite earlier ones).
+      key_map = Enum.reduce(map, %{}, fn {k, _v}, acc -> Map.put(acc, to_string(k), k) end)
+      sorted = key_map |> Map.keys() |> Enum.sort()
+
+      {rev_iodata, size, ctx} =
+        do_encode_pairs(sorted, key_map, map, offset + 5, ctx, [], 0)
+
+      {[
+         <<Constants.tag_object(), length(sorted)::32-little>> | :lists.reverse(rev_iodata)
+       ], 5 + size, ctx}
+    end
+  end
+
+  defp all_binary_keys?(keys), do: Enum.all?(keys, &is_binary/1)
+
+  defp do_encode_pairs([], _map, _offset, ctx, acc, size), do: {acc, size, ctx}
+
+  defp do_encode_pairs([key | rest], map, offset, ctx, acc, size) do
+    {key_iodata, key_size, ctx} = encode_string(key, ctx)
+
+    {value_iodata, value_size, ctx} =
+      encode_value(Map.fetch!(map, key), offset + key_size, ctx)
+
+    do_encode_pairs(
+      rest,
+      map,
+      offset + key_size + value_size,
+      ctx,
+      [value_iodata, key_iodata | acc],
+      size + key_size + value_size
+    )
+  end
+
+  defp do_encode_pairs([], _key_map, _map, _offset, ctx, acc, size), do: {acc, size, ctx}
+
+  defp do_encode_pairs([key | rest], key_map, map, offset, ctx, acc, size) do
+    {key_iodata, key_size, ctx} = encode_string(key, ctx)
+
+    {value_iodata, value_size, ctx} =
+      encode_value(Map.fetch!(map, Map.fetch!(key_map, key)), offset + key_size, ctx)
+
+    do_encode_pairs(
+      rest,
+      key_map,
+      map,
+      offset + key_size + value_size,
+      ctx,
+      [value_iodata, key_iodata | acc],
+      size + key_size + value_size
+    )
+  end
+
+  # ── Typed arrays ────────────────────────────────────────────────────────────
+
+  defp encode_typed_array(%ToonEx.Btoon.TypedArray{type: type, data: data}, offset, ctx) do
+    elem_size = ElementType.element_size(type)
+    count = div(byte_size(data), elem_size)
+    # Buffer begins at offset + 7 (tag + element type + count + pad-length byte).
+    pad = pad_to(offset + 7, elem_size)
+
+    iodata =
+      [
+        <<Constants.tag_typed_array(), ElementType.type_byte(type), count::32-little, pad>>,
+        zeroes(pad),
+        data
+      ]
+
+    {iodata, 7 + pad + byte_size(data), ctx}
+  end
+
+  # ── Object tables ───────────────────────────────────────────────────────────
+
+  defp encode_object_table(
+         %ToonEx.Btoon.ObjectTable{row_count: row_count, columns: columns},
+         offset,
+         ctx
+       ) do
+    {col_iodata, col_size, ctx} = do_encode_columns(columns, row_count, offset + 9, ctx, [], 0)
+
+    {[
+       <<Constants.tag_object_table(), row_count::32-little, length(columns)::32-little>>,
+       col_iodata
+     ], 9 + col_size, ctx}
+  end
+
+  # Each column is a name ref, element type, pad-length byte, padding and the
+  # aligned raw buffer. The buffer begins at offset + name_size + 2, so padding
+  # is computed to align it to the element size.
+  defp do_encode_columns([], _row_count, _offset, ctx, acc, size),
+    do: {:lists.reverse(acc), size, ctx}
+
+  defp do_encode_columns([column | rest], row_count, offset, ctx, acc, size) do
+    {name_iodata, name_size, ctx} = encode_string(column.name, ctx)
+
+    unless ElementType.numeric?(column.type) do
+      raise EncodeError,
+        message: "object table column requires a numeric type",
+        value: column.type
+    end
+
+    elem_size = ElementType.element_size(column.type)
+    data_size = row_count * elem_size
+    pad = pad_to(offset + name_size + 2, elem_size)
+
+    column_iodata = [
+      name_iodata,
+      <<ElementType.type_byte(column.type)>>,
+      <<pad>>,
+      zeroes(pad),
+      column.data
+    ]
+
+    column_size = name_size + 1 + 1 + pad + data_size
+
+    do_encode_columns(
+      rest,
+      row_count,
+      offset + column_size,
+      ctx,
+      [column_iodata | acc],
+      size + column_size
+    )
+  end
+
+  # ── Schema mode ─────────────────────────────────────────────────────────────
+
+  defp encode_schema_body(%Schema{id: id, fields: fields}, map, ctx) do
+    {rev_iodata, size, ctx} = do_encode_fields(fields, map, 4, ctx, [], 0)
+    {[<<id::32-little>> | :lists.reverse(rev_iodata)], 4 + size, ctx}
+  end
+
+  defp do_encode_fields([], _map, _offset, ctx, acc, size), do: {acc, size, ctx}
+
+  defp do_encode_fields([%{name: name, type: type} | rest], map, offset, ctx, acc, size) do
+    case Map.fetch(map, name) do
+      :error ->
+        raise EncodeError, message: "missing value for schema field", value: name
+
+      {:ok, value} ->
+        {field_iodata, field_size, ctx} = encode_field(type, value, offset, ctx)
+
+        do_encode_fields(
+          rest,
+          map,
+          offset + field_size,
+          ctx,
+          [field_iodata | acc],
+          size + field_size
+        )
+    end
+  end
+
+  defp encode_field(type, value, _offset, ctx)
+       when type in [:int8, :uint8, :int16, :uint16, :int32, :uint32, :int64, :uint64] do
+    encode_fixed_int(type, value, ctx)
+  end
+
+  defp encode_field(type, value, _offset, ctx) when type in [:float32, :float64] do
+    if is_float(value) do
+      {ElementType.encode_raw(type, value), ElementType.size(type), ctx}
+    else
+      raise EncodeError, message: "schema field #{inspect(type)} requires a float", value: value
+    end
+  end
+
+  defp encode_field(:null, nil, _offset, ctx), do: {<<>>, 0, ctx}
+
+  defp encode_field(:null, value, _offset, _ctx) do
+    raise EncodeError, message: "null schema field requires nil", value: value
+  end
+
+  defp encode_field(:bool, value, _offset, ctx) when is_boolean(value) do
+    {<<if(value, do: 1, else: 0)>>, 1, ctx}
+  end
+
+  defp encode_field(:bool, value, _offset, _ctx) do
+    raise EncodeError, message: "bool schema field requires a boolean", value: value
+  end
+
+  defp encode_field(:string, value, _offset, ctx) when is_binary(value),
+    do: encode_string(value, ctx)
+
+  defp encode_field(:string, value, _offset, _ctx) do
+    raise EncodeError, message: "string schema field requires a binary", value: value
+  end
+
+  defp encode_field(:binary, %ToonEx.Btoon.Binary{data: data}, _offset, ctx) do
+    {iodata, size} = encode_binary(data)
+    {iodata, size, ctx}
+  end
+
+  defp encode_field(:binary, value, _offset, ctx) when is_binary(value) do
+    {iodata, size} = encode_binary(value)
+    {iodata, size, ctx}
+  end
+
+  defp encode_field(:array, value, offset, ctx), do: encode_value(value, offset, ctx)
+  defp encode_field(:object, value, offset, ctx), do: encode_value(value, offset, ctx)
+
+  defp encode_fixed_int(type, value, ctx) when is_integer(value) do
+    {min, max} = ElementType.int_range(type)
+
+    if value >= min and value <= max do
+      {ElementType.encode_raw(type, value), ElementType.size(type), ctx}
+    else
+      raise EncodeError,
+        message: "value out of range for schema field #{inspect(type)}",
+        value: value
+    end
+  end
+
+  defp encode_fixed_int(type, value, _ctx) do
+    raise EncodeError, message: "schema field #{inspect(type)} requires an integer", value: value
+  end
+
+  # ── Alignment helpers ───────────────────────────────────────────────────────
+
+  @doc false
+  def pad_to(pos, align) when align > 0, do: rem(align - rem(pos, align), align)
+
+  @doc false
+  def zeroes(0), do: <<>>
+  def zeroes(n) when n > 0, do: :binary.copy(<<0>>, n)
+end
