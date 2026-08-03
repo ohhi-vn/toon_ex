@@ -29,9 +29,9 @@ defmodule ToonEx.Encode.Stream do
   Memory usage stays constant regardless of output size.
   """
 
+  alias ToonEx.Constants
   alias ToonEx.Encode.{Arrays, Objects, Options, Primitives, Strings, Writer}
   alias ToonEx.Utils
-  alias ToonEx.Constants
 
   @type opts :: keyword()
   @type iodata_chunk :: iodata()

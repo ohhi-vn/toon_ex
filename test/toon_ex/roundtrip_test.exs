@@ -452,7 +452,7 @@ defmodule ToonEx.RoundtripTest do
   end
 
   test "very large float roundtrips correctly" do
-    data = %{"x" => 1.23456789e15}
+    data = %{"x" => 1.234_567_89e15}
     {_encoded, decoded, normalized} = roundtrip(data)
     assert decoded["x"] == normalized["x"]
   end

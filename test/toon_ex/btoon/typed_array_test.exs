@@ -1,8 +1,8 @@
 defmodule ToonEx.Btoon.TypedArrayTest do
   use ExUnit.Case, async: true
 
-  alias ToonEx.Btoon.TypedArray
-  alias ToonEx.Btoon.ObjectTable
+  alias ToonEx.Btoon
+  alias ToonEx.Btoon.{ObjectTable, TypedArray}
 
   describe "TypedArray" do
     test "to_list materializes numbers" do
@@ -20,16 +20,16 @@ defmodule ToonEx.Btoon.TypedArrayTest do
     end
 
     test "decode lists mode materializes elements" do
-      bin = ToonEx.Btoon.encode!(TypedArray.from_list([1, 2, 3]))
-      assert ToonEx.Btoon.decode!(bin) == [1, 2, 3]
-      assert ToonEx.Btoon.decode!(bin, typed_arrays: :lists) == [1, 2, 3]
+      bin = Btoon.encode!(TypedArray.from_list([1, 2, 3]))
+      assert Btoon.decode!(bin) == [1, 2, 3]
+      assert Btoon.decode!(bin, typed_arrays: :lists) == [1, 2, 3]
     end
 
     test "decode views mode returns the struct with a sub-binary" do
-      bin = ToonEx.Btoon.encode!(TypedArray.from_list([1, 2, 3]))
+      bin = Btoon.encode!(TypedArray.from_list([1, 2, 3]))
 
       assert %TypedArray{type: :int8, data: data} =
-               ToonEx.Btoon.decode!(bin, typed_arrays: :views)
+               Btoon.decode!(bin, typed_arrays: :views)
 
       assert data == <<1, 2, 3>>
     end
@@ -44,12 +44,12 @@ defmodule ToonEx.Btoon.TypedArrayTest do
             {:int8, <<1>>}
           ] do
         bin =
-          ToonEx.Btoon.encode!(%{
+          Btoon.encode!(%{
             "prefix" => "padding",
             "data" => TypedArray.new(type, data)
           })
 
-        assert {:ok, %{"data" => ta}} = ToonEx.Btoon.decode(bin, typed_arrays: :views)
+        assert {:ok, %{"data" => ta}} = Btoon.decode(bin, typed_arrays: :views)
         assert %TypedArray{type: ^type} = ta
       end
     end
@@ -57,10 +57,10 @@ defmodule ToonEx.Btoon.TypedArrayTest do
     test "nested typed array data offsets are element-aligned" do
       # Wrap in enough varying content that naive placement would misalign.
       ta = TypedArray.new(:float64, <<1.5::64-little-float>>)
-      bin = ToonEx.Btoon.encode!([%{"x" => "s"}, ta, %{"y" => "longer string"}] |> Enum.reverse())
+      bin = Btoon.encode!([%{"x" => "s"}, ta, %{"y" => "longer string"}] |> Enum.reverse())
 
       {:ok, [%{"y" => _}, %TypedArray{data: data}, %{"x" => _}]} =
-        ToonEx.Btoon.decode(bin, typed_arrays: :views)
+        Btoon.decode(bin, typed_arrays: :views)
 
       assert <<1.5::64-little-float>> = data
     end
@@ -85,22 +85,22 @@ defmodule ToonEx.Btoon.TypedArrayTest do
 
     test "encode/decode list of maps round trips" do
       rows = [%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}]
-      assert ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(rows)) == rows
+      assert Btoon.decode!(Btoon.encode!(rows)) == rows
     end
 
     test "views mode returns the table struct" do
-      bin = ToonEx.Btoon.encode!([%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}])
+      bin = Btoon.encode!([%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}])
 
       assert %ObjectTable{
                row_count: 2,
                columns: [%ObjectTable.Column{name: "x"}, %ObjectTable.Column{name: "y"}]
              } =
-               ToonEx.Btoon.decode!(bin, typed_arrays: :views)
+               Btoon.decode!(bin, typed_arrays: :views)
     end
 
     test "column buffers are aligned and contiguous" do
       rows = [%{"a" => 1, "b" => 2.5}, %{"a" => 2, "b" => 4.5}]
-      bin = ToonEx.Btoon.encode!(rows)
+      bin = Btoon.encode!(rows)
 
       {:ok,
        %ObjectTable{
@@ -109,7 +109,7 @@ defmodule ToonEx.Btoon.TypedArrayTest do
            %ObjectTable.Column{type: :float32, data: b}
          ]
        }} =
-        ToonEx.Btoon.decode(bin, typed_arrays: :views)
+        Btoon.decode(bin, typed_arrays: :views)
 
       assert a == <<1, 2>>
       assert b == <<0, 0, 32, 64, 0, 0, 144, 64>>

@@ -69,7 +69,10 @@ defmodule ToonEx.Btoon.ElementType do
             type_byte: 1,
             f32_exact?: 1,
             encode_raw: 2,
-            element_size: 1}
+            encode_numeric: 2,
+            element_size: 1,
+            list_to_buffer: 2,
+            do_list_to_buffer: 3}
 
   @doc "Element size in bytes (0 for variable-length composite types)."
   @spec size(ToonEx.Btoon.Types.element_type()) :: non_neg_integer()
@@ -223,10 +226,10 @@ defmodule ToonEx.Btoon.ElementType do
   Detects whether a list of maps is a valid columnar object table.
 
   All maps must share the same (sorted) key set and each column must be a
-  homogeneous numeric column. Returns `{:ok, names, types}` or `:error`.
+  homogeneous numeric column. Returns `{:ok, names, types, columns}` or `:error`.
   """
   @spec detect_object_table([%{optional(String.t()) => term()}]) ::
-          {:ok, [String.t()], [ToonEx.Btoon.Types.element_type()]} | :error
+          {:ok, [String.t()], [ToonEx.Btoon.Types.element_type()], [[number()]]} | :error
   def detect_object_table([]), do: :error
 
   def detect_object_table([first | _] = rows) when is_map(first) and map_size(first) > 0 do
@@ -245,7 +248,7 @@ defmodule ToonEx.Btoon.ElementType do
 
       true ->
         case detect_columns(names, rows) do
-          {:ok, types} -> {:ok, names, types}
+          {:ok, types, columns} -> {:ok, names, types, columns}
           :error -> :error
         end
     end
@@ -266,7 +269,10 @@ defmodule ToonEx.Btoon.ElementType do
   """
   @spec list_to_buffer(ToonEx.Btoon.Types.element_type(), [number()]) :: binary()
   def list_to_buffer(type, values) when is_atom(type) and is_list(values) do
-    IO.iodata_to_binary(Enum.map(values, &encode_raw(type, &1)))
+    values
+    |> do_list_to_buffer(type, [])
+    |> :lists.reverse()
+    |> IO.iodata_to_binary()
   end
 
   @doc """
@@ -310,30 +316,27 @@ defmodule ToonEx.Btoon.ElementType do
 
   # ── private ─────────────────────────────────────────────────────────────────
 
-  defp column_type([]), do: :error
-
-  defp column_type(values) do
-    case detect_type(values) do
-      {:ok, type} when type in @numeric_types -> {:ok, type}
-      _ -> :error
-    end
-  end
-
-  defp detect_columns([], _rows), do: {:ok, []}
+  defp detect_columns([], _rows), do: {:ok, [], []}
 
   defp detect_columns([name | rest], rows) do
     column = Enum.map(rows, fn row -> Map.fetch!(row, name) end)
 
-    case column_type(column) do
+    case detect_type(column) do
       :error ->
         :error
 
       {:ok, type} ->
         case detect_columns(rest, rows) do
-          {:ok, types} -> {:ok, [type | types]}
+          {:ok, types, columns} -> {:ok, [type | types], [column | columns]}
           :error -> :error
         end
     end
+  end
+
+  defp do_list_to_buffer([], _type, acc), do: acc
+
+  defp do_list_to_buffer([v | rest], type, acc) do
+    do_list_to_buffer(rest, type, [encode_numeric(type, v) | acc])
   end
 
   defp encode_numeric(:int8, v), do: <<v::8-signed>>

@@ -124,7 +124,7 @@ defmodule ToonEx.Roundtrip.FullTest do
     # The is_finite boundary is tested in ToonEx.Utils.NormalizeTest.
 
     test "large float no scientific notation" do
-      value = 1.23456789e15
+      value = 1.234_567_89e15
       {enc, decoded, norm} = rt(value)
       refute String.contains?(enc, "e")
       assert decoded == norm

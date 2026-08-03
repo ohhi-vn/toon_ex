@@ -7,11 +7,11 @@ defmodule ToonEx.Btoon.Types do
   binaries, so two wrapper structs exist to disambiguate values that are
   otherwise indistinguishable:
 
-    * `ToonEx.Btoon.Binary` – a binary value (tag `0x08`) as opposed to a string
+    * `Btoon.Binary` – a binary value (tag `0x08`) as opposed to a string
       (tag `0x07`).
-    * `ToonEx.Btoon.TypedArray` – a contiguous, homogeneous numeric buffer (tag
+    * `Btoon.TypedArray` – a contiguous, homogeneous numeric buffer (tag
       `0x0C`).
-    * `ToonEx.Btoon.ObjectTable` – a columnar table of homogeneous numeric columns
+    * `Btoon.ObjectTable` – a columnar table of homogeneous numeric columns
       (tag `0x0D`).
 
   ## Element types
@@ -19,14 +19,16 @@ defmodule ToonEx.Btoon.Types do
   Element types are named atoms (`:int8`, `:uint8`, `:int16`, `:uint16`,
   `:int32`, `:uint32`, `:int64`, `:uint64`, `:float32`, `:float64`) and,
   for schema fields only, `:null`, `:bool`, `:string`, `:binary`, `:array`
-  and `:object`. See `ToonEx.Btoon.ElementType`.
+  and `:object`. See `Btoon.ElementType`.
   """
 
+  alias ToonEx.Btoon
+
   @typedoc "A BTOON primitive value."
-  @type primitive :: nil | boolean() | integer() | float() | String.t() | ToonEx.Btoon.Binary.t()
+  @type primitive :: nil | boolean() | integer() | float() | String.t() | Btoon.Binary.t()
 
   @typedoc """
-  Any value that can be encoded by `ToonEx.Btoon`.
+  Any value that can be encoded by `Btoon`.
   """
   @type encodable ::
           nil
@@ -34,9 +36,9 @@ defmodule ToonEx.Btoon.Types do
           | integer()
           | float()
           | String.t()
-          | ToonEx.Btoon.Binary.t()
-          | ToonEx.Btoon.TypedArray.t()
-          | ToonEx.Btoon.ObjectTable.t()
+          | Btoon.Binary.t()
+          | Btoon.TypedArray.t()
+          | Btoon.ObjectTable.t()
           | [encodable()]
           | %{optional(String.t()) => encodable()}
 
@@ -59,24 +61,24 @@ defmodule ToonEx.Btoon.Types do
           | :array
           | :object
 
-  @typedoc "Options accepted by `ToonEx.Btoon.encode/2` and `ToonEx.Btoon.encode!/2`."
+  @typedoc "Options accepted by `Btoon.encode/2` and `Btoon.encode!/2`."
   @type encode_opts :: [encode_opt()]
 
   @typedoc "A single encoding option."
   @type encode_opt ::
-          {:dictionary, ToonEx.Btoon.Dictionary.t() | nil}
+          {:dictionary, Btoon.Dictionary.t() | nil}
           | {:string_table, :auto | :off}
-          | {:schema, ToonEx.Btoon.Schema.t() | nil}
+          | {:schema, Btoon.Schema.t() | nil}
           | {:typed_arrays, boolean()}
           | {:object_tables, boolean()}
 
-  @typedoc "Options accepted by `ToonEx.Btoon.decode/2` and `ToonEx.Btoon.decode!/2`."
+  @typedoc "Options accepted by `Btoon.decode/2` and `Btoon.decode!/2`."
   @type decode_opts :: [decode_opt()]
 
   @typedoc "A single decoding option."
   @type decode_opt ::
-          {:dictionary, ToonEx.Btoon.Dictionary.t() | nil}
-          | {:schema, ToonEx.Btoon.Schema.t() | nil}
+          {:dictionary, Btoon.Dictionary.t() | nil}
+          | {:schema, Btoon.Schema.t() | nil}
           | {:keys, :strings | :atoms | :atoms!}
           | {:typed_arrays, :lists | :views}
           | {:max_depth, pos_integer()}
@@ -90,7 +92,7 @@ defmodule ToonEx.Btoon.Binary do
 
   ## Examples
 
-      iex> ToonEx.Btoon.encode!(%{"blob" => ToonEx.Btoon.Binary.new(<<1, 2, 3>>)})
+      iex> Btoon.encode!(%{"blob" => Btoon.Binary.new(<<1, 2, 3>>)})
       <<66, 84, 79, 78, 1, 0, 0, 0, 10, 1, 0, 0, 0, 8, 3, 0, 0, 0, 1, 2, 3>>
   """
 
@@ -118,25 +120,27 @@ defmodule ToonEx.Btoon.TypedArray do
 
   ## Examples
 
-      iex> ta = ToonEx.Btoon.TypedArray.new(:float64, <<1.5::64-little-float, 2.5::64-little-float>>)
-      iex> ToonEx.Btoon.TypedArray.type(ta)
+      iex> ta = Btoon.TypedArray.new(:float64, <<1.5::64-little-float, 2.5::64-little-float>>)
+      iex> Btoon.TypedArray.type(ta)
       :float64
-      iex> ToonEx.Btoon.TypedArray.to_list(ta)
+      iex> Btoon.TypedArray.to_list(ta)
       [1.5, 2.5]
   """
 
+  alias ToonEx.Btoon
+
   defstruct [:type, :data]
 
-  @type t :: %__MODULE__{type: ToonEx.Btoon.Types.element_type(), data: binary()}
+  @type t :: %__MODULE__{type: Btoon.Types.element_type(), data: binary()}
 
   @doc """
   Builds a typed array from a raw buffer.
 
   The buffer length must be a multiple of the element size of `type`.
   """
-  @spec new(ToonEx.Btoon.Types.element_type(), binary()) :: t()
+  @spec new(Btoon.Types.element_type(), binary()) :: t()
   def new(type, data) when is_atom(type) and is_binary(data) do
-    size = ToonEx.Btoon.ElementType.size(type)
+    size = Btoon.ElementType.size(type)
 
     if size > 0 and rem(byte_size(data), size) != 0 do
       raise ArgumentError,
@@ -147,7 +151,7 @@ defmodule ToonEx.Btoon.TypedArray do
   end
 
   @doc "Returns the element type atom."
-  @spec type(t()) :: ToonEx.Btoon.Types.element_type()
+  @spec type(t()) :: Btoon.Types.element_type()
   def type(%__MODULE__{type: type}), do: type
 
   @doc "Returns the raw buffer."
@@ -159,12 +163,12 @@ defmodule ToonEx.Btoon.TypedArray do
   """
   @spec to_list(t()) :: [number()]
   def to_list(%__MODULE__{type: type, data: data}),
-    do: ToonEx.Btoon.ElementType.buffer_to_list(type, data)
+    do: Btoon.ElementType.buffer_to_list(type, data)
 
   @doc "Number of elements in the typed array."
   @spec length(t()) :: non_neg_integer()
   def length(%__MODULE__{type: type, data: data}),
-    do: div(byte_size(data), ToonEx.Btoon.ElementType.size(type))
+    do: div(byte_size(data), Btoon.ElementType.size(type))
 
   @doc """
   Builds a typed array from a list of numbers, picking the narrowest type
@@ -173,9 +177,9 @@ defmodule ToonEx.Btoon.TypedArray do
   """
   @spec from_list([number()]) :: t()
   def from_list(values) when is_list(values) do
-    case ToonEx.Btoon.ElementType.detect_type(values) do
+    case Btoon.ElementType.detect_type(values) do
       {:ok, type} ->
-        %__MODULE__{type: type, data: ToonEx.Btoon.ElementType.list_to_buffer(type, values)}
+        %__MODULE__{type: type, data: Btoon.ElementType.list_to_buffer(type, values)}
 
       :error ->
         raise ArgumentError, "cannot detect an element type for #{inspect(values)}"
@@ -194,18 +198,20 @@ defmodule ToonEx.Btoon.ObjectTable do
 
   ## Examples
 
-      iex> table = ToonEx.Btoon.ObjectTable.from_rows([%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}])
-      iex> ToonEx.Btoon.ObjectTable.rows(table)
+      iex> table = Btoon.ObjectTable.from_rows([%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}])
+      iex> Btoon.ObjectTable.rows(table)
       [%{"x" => 1, "y" => 2.5}, %{"x" => 3, "y" => 4.5}]
   """
 
+  alias ToonEx.Btoon
+
   defmodule Column do
-    @moduledoc "A single column definition of an `ToonEx.Btoon.ObjectTable`."
+    @moduledoc "A single column definition of an `Btoon.ObjectTable`."
     defstruct [:name, :type, :data]
 
     @type t :: %__MODULE__{
             name: String.t(),
-            type: ToonEx.Btoon.Types.element_type(),
+            type: Btoon.Types.element_type(),
             data: binary()
           }
   end
@@ -219,18 +225,16 @@ defmodule ToonEx.Btoon.ObjectTable do
 
   @doc """
   Builds an object table from a list of maps. All maps must share the same
-  keys and every column must be homogeneous numeric (`ToonEx.Btoon.Types.encodable`).
+  keys and every column must be homogeneous numeric (`Btoon.Types.encodable`).
   """
   @spec from_rows([%{optional(String.t()) => term()}]) :: t()
   def from_rows(rows) when is_list(rows) do
     case ToonEx.Btoon.ElementType.detect_object_table(rows) do
-      {:ok, names, types} ->
+      {:ok, names, types, columns_data} ->
         columns =
-          names
-          |> Enum.zip(types)
-          |> Enum.map(fn {name, type} ->
-            data =
-              ToonEx.Btoon.ElementType.list_to_buffer(type, Enum.map(rows, &Map.fetch!(&1, name)))
+          Enum.zip([names, types, columns_data])
+          |> Enum.map(fn {name, type, values} ->
+            data = ToonEx.Btoon.ElementType.list_to_buffer(type, values)
 
             %Column{name: name, type: type, data: data}
           end)
@@ -252,7 +256,7 @@ defmodule ToonEx.Btoon.ObjectTable do
 
     values =
       Enum.map(columns, fn %Column{type: type, data: data} ->
-        ToonEx.Btoon.ElementType.buffer_to_list(type, data)
+        Btoon.ElementType.buffer_to_list(type, data)
       end)
 
     for i <- 0..(row_count - 1) do

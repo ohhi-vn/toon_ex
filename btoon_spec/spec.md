@@ -200,7 +200,9 @@ One byte.
 | 1   | `0x02` | schema included (embedded schema present)|
 | 2   | `0x04` | string table present                    |
 | 3   | `0x08` | session dictionary active               |
-| 4–7 | —     | reserved                                |
+| 4   | `0x10` | no per-message string table (all strings via session dict or inline) |
+| 5   | `0x20` | schema ID is UInt16 (2 bytes) instead of UInt32 |
+| 6–7 | —     | reserved                                |
 
 Decoder MUST ignore unrecognized/reserved flag bits.
 
@@ -230,6 +232,20 @@ Strings are added to the table in first-encounter order during encoding. Ref ids
 for table entries are assigned after all session dictionary entries (see
 [§11](#11-string-dictionaries)).
 
+### 7.5.1 No Per-Message String Table (Flag 0x10)
+
+When flag bit 4 (`0x10`) is set, the per-message string table is **absent**.
+All strings MUST be encoded as either:
+- StringRef referencing the session dictionary (flag 0x08 must also be set), or
+- Inline String (tag 0x07) when not in the session dictionary.
+
+This flag is intended for connections with a negotiated session dictionary where
+the application knows all strings will be in the dictionary or are one-off.
+It eliminates the string table build, alignment padding, and flag byte overhead.
+
+The no-string-table flag (0x10) and string table flag (0x04) are mutually
+exclusive. Encoder MUST NOT set both.
+
 ### 7.6 Embedded Schema
 
 Present only when flag bit 1 (`0x02`) is set. Layout:
@@ -252,6 +268,12 @@ Present only when flag bit 1 (`0x02`) is set. Layout:
 ```
 
 See [§15](#15-schema-mode) for the body layout that follows.
+
+### 7.6.1 Schema ID Size (Flag 0x20)
+
+When flag bit 5 (`0x20`) is set, the embedded schema's `SchemaID` field is encoded as **UInt16** (2 bytes) instead of UInt32 (4 bytes). This saves 2 bytes per message for deployments with fewer than 65,536 schemas.
+
+The schema ID size flag (0x20) only affects the embedded schema block in the envelope; the schema-mode body (which begins with `SchemaID`) always uses the size matching this flag.
 
 ### 7.7 Body
 
@@ -515,6 +537,7 @@ Name (String|StringRef)  ElementType::1  PadLen::1  Padding  RawBuffer
 ```
 
 - `Name` is the field name as a String or StringRef.
+- **When the session dictionary flag (0x08) is set, column names MUST be encoded as StringRef.** This avoids repeating column names that are already in the session dictionary.
 - `RawBuffer` holds exactly `RowCount` elements of the column's element type,
   little-endian, aligned per [§16](#16-alignment-and-padding).
 - Column data is decoded in bulk; rows are reconstructed by striding across
@@ -544,8 +567,10 @@ the schema flag is set, the embedded schema is authoritative.
 ### 15.2 Body layout
 
 ```
-SchemaID::UInt32  FieldValue  FieldValue  ...
+SchemaID::UInt32|UInt16  FieldValue  FieldValue  ...
 ```
+
+The `SchemaID` size is determined by the envelope flag 0x20 (see [§7.6.1](#761-schema-id-size-flag-0x20)): UInt16 when the flag is set, otherwise UInt32.
 
 Field values are encoded strictly per the schema, in field order, with no tags
 and no keys:
@@ -619,8 +644,14 @@ produce identical bytes across runs.
 - Encoder MUST use a TypedArray for homogeneous numeric arrays and an
   ObjectTable for homogeneous object arrays (both MAY be disabled by
   application option, in which case the general Array encoding is used).
+- **Encoder MUST encode ObjectTable column names as StringRef when the session
+  dictionary flag (0x08) is set.** This avoids repeating column names already
+  present in the session dictionary.
 - Encoder MUST set the envelope flags to match what it actually emitted
-  (string table, schema, session dictionary).
+  (string table, schema, session dictionary, no per-message table, schema ID size).
+- **When the session dictionary flag (0x08) is set and the encoder will not emit
+  any per-message string table entries, the encoder SHOULD set the no per-message
+  table flag (0x10) to eliminate the table overhead.**
 - Encoder MUST emit alignment padding per [§16](#16-alignment-and-padding).
 - Encoder SHOULD write iodata / scatter-gather output rather than
   concatenating into a single buffer, to avoid copies.
@@ -634,7 +665,7 @@ produce identical bytes across runs.
 - Decoder MUST reject truncated data, unknown tags, invalid element type
   selectors, StringRefs out of range, non-numeric ObjectTable columns, and
   schema values that violate the schema.
-- Decoder SHOULD impose configurable limits: maximum nesting depth, maximum
+- Decoder MUST impose configurable limits: maximum nesting depth, maximum
   string/binary size, and maximum container counts (see
   [§24](#24-security-considerations)).
 - Decoder MUST NOT convert binary payloads to lists as an intermediate step.
@@ -866,10 +897,12 @@ Wrapper types:
 - `BTOON.Schema` — named, typed record schema.
 
 Encoding options: `:dictionary`, `:string_table` (`:auto` | `:off`),
-`:schema`, `:typed_arrays` (boolean), `:object_tables` (boolean).
+`:no_string_table` (boolean), `:schema`, `:schema_id_uint16` (boolean),
+`:typed_arrays` (boolean), `:object_tables` (boolean).
 
 Decoding options: `:dictionary`, `:schema`, `:keys` (`:strings` | `:atoms` |
-`:atoms!`), `:typed_arrays` (`:lists` | `:views`), `:max_depth`.
+`:atoms!`), `:typed_arrays` (`:lists` | `:views`), `:max_depth`,
+`:max_string_size`, `:max_binary_size`, `:max_container_count`.
 
 ## 28. Performance Targets
 

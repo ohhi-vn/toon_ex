@@ -7,7 +7,7 @@ defmodule ToonEx.Btoon.Encode do
 
     * Envelope: `"BTON"` magic, version, flags, reserved, optional string
       table, optional embedded schema, then an 8-byte-aligned body.
-    * Value tags (`ToonEx.Btoon.Constants`) with inline `SmallInt` for integers in
+    * Value tags (`Btoon.Constants`) with inline `SmallInt` for integers in
       `-32..95` and fixed-width little-endian integers/floats otherwise.
     * Strings deduplicated against a session dictionary and a per-message
       string table via `StringRef`.
@@ -20,18 +20,20 @@ defmodule ToonEx.Btoon.Encode do
 
   Every input maps to exactly one byte sequence: map keys are sorted, strings
   are added to the per-message table in first-encounter order, and numeric
-  lists use `ToonEx.Btoon.ElementType.detect_type/1` to pick a single legal type.
+  lists use `Btoon.ElementType.detect_type/1` to pick a single legal type.
 
   ## API
 
-      iex> ToonEx.Btoon.Encode.encode!(%{"name" => "Alice", "age" => 30})
+      iex> Btoon.Encode.encode!(%{"name" => "Alice", "age" => 30})
       <<66, 84, 79, 78, 1, 4, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0, 97, 103, 101, 4, 0,
         0, 0, 110, 97, 109, 101, 5, 0, 0, 0, 65, 108, 105, 99, 101, 0, 0, 0, 0, 10,
         2, 0, 0, 0, 11, 64, 94, 11, 65, 11, 66>>
   """
 
+  alias ToonEx.Btoon
   alias ToonEx.Btoon.{Constants, ElementType, EncodeError, Schema}
   alias ToonEx.Btoon.Encode.Options
+  alias ToonEx.Btoon.SchemaCompiler
 
   @compile {:inline,
             pad_to: 2,
@@ -39,11 +41,12 @@ defmodule ToonEx.Btoon.Encode do
             encode_int_value: 1,
             encode_binary: 1,
             encode_string_ref: 1,
+            encode_string_ref_tuple: 2,
             encode_string: 2,
+            encode_int: 2,
             encode_value: 3,
-            do_encode_items: 5,
-            do_encode_pairs: 6,
-            do_encode_pairs: 7,
+            do_encode_items: 6,
+            do_encode_pairs: 5,
             do_encode_columns: 6,
             do_encode_fields: 6,
             encode_field: 4,
@@ -54,10 +57,10 @@ defmodule ToonEx.Btoon.Encode do
   @doc """
   Encodes data to the BTOON binary format.
 
-  Returns `{:ok, binary}` or `{:error, ToonEx.Btoon.EncodeError.t()}`.
+  Returns `{:ok, binary}` or `{:error, Btoon.EncodeError.t()}`.
   """
-  @spec encode(ToonEx.Btoon.Types.encodable(), keyword()) ::
-          {:ok, binary()} | {:error, ToonEx.Btoon.EncodeError.t()}
+  @spec encode(Btoon.Types.encodable(), keyword()) ::
+          {:ok, binary()} | {:error, Btoon.EncodeError.t()}
   def encode(data, opts \\ []) do
     case Options.validate(opts) do
       {:ok, validated} ->
@@ -74,21 +77,57 @@ defmodule ToonEx.Btoon.Encode do
   end
 
   @doc """
+  Encodes data to the BTOON binary format using pre-validated options.
+
+  Returns `{:ok, binary}` or `{:error, Btoon.EncodeError.t()}`.
+
+  This avoids re-validating options on each call, improving performance for
+  repeated encoding with the same options.
+  """
+  @spec encode_validated(
+          Btoon.Types.encodable(),
+          Btoon.Encode.Options.validated()
+        ) :: {:ok, binary()} | {:error, Btoon.EncodeError.t()}
+  def encode_validated(data, validated_opts) do
+    {:ok, do_encode(data, validated_opts)}
+  rescue
+    e in EncodeError -> {:error, e}
+    e -> {:error, EncodeError.exception(message: Exception.message(e), value: data)}
+  end
+
+  @doc """
   Encodes data to the BTOON binary format, raising on error.
   """
-  @spec encode!(ToonEx.Btoon.Types.encodable(), keyword()) :: binary()
+  @spec encode!(Btoon.Types.encodable(), keyword()) :: binary()
   def encode!(data, opts \\ []) do
     validated = Options.validate!(opts)
     do_encode(data, validated)
   rescue
     e in EncodeError -> reraise e, __STACKTRACE__
-    e -> raise EncodeError, message: Exception.message(e), value: data
+    e -> reraise EncodeError, [message: Exception.message(e), value: data], __STACKTRACE__
+  end
+
+  @doc """
+  Encodes data to the BTOON binary format using pre-validated options, raising on error.
+
+  This avoids re-validating options on each call, improving performance for
+  repeated encoding with the same options.
+  """
+  @spec encode_validated!(
+          Btoon.Types.encodable(),
+          Btoon.Encode.Options.validated()
+        ) :: binary()
+  def encode_validated!(data, validated_opts) do
+    do_encode(data, validated_opts)
+  rescue
+    e in EncodeError -> reraise e, __STACKTRACE__
+    e -> reraise EncodeError, [message: Exception.message(e), value: data], __STACKTRACE__
   end
 
   @doc """
   Encodes data to BTOON iodata without flattening to a single binary.
   """
-  @spec encode_to_iodata!(ToonEx.Btoon.Types.encodable(), keyword()) :: iodata()
+  @spec encode_to_iodata!(Btoon.Types.encodable(), keyword()) :: iodata()
   def encode_to_iodata!(data, opts \\ []) do
     validated = Options.validate!(opts)
     ctx = new_ctx(validated)
@@ -106,8 +145,12 @@ defmodule ToonEx.Btoon.Encode do
 
   defp encode_body(data, %{schema: nil}, ctx), do: encode_value(data, 0, ctx)
 
-  defp encode_body(data, %{schema: schema}, ctx) when is_map(data) do
+  defp encode_body(data, %{schema: schema}, ctx) when is_map(schema) do
     encode_schema_body(schema, data, ctx)
+  end
+
+  defp encode_body(data, %{compiled_schema: compiled}, ctx) when is_map(data) do
+    SchemaCompiler.encode_schema_body(compiled, data, ctx)
   end
 
   defp encode_body(_data, %{schema: schema}, _ctx) do
@@ -118,7 +161,7 @@ defmodule ToonEx.Btoon.Encode do
 
   defp assemble(opts, ctx, body) do
     table_entries = :lists.reverse(ctx.table_rev)
-    do_assemble(opts, table_entries, body)
+    do_assemble(opts, table_entries, body) |> IO.iodata_to_binary()
   end
 
   defp assemble_iodata(opts, ctx, body) do
@@ -128,15 +171,23 @@ defmodule ToonEx.Btoon.Encode do
 
   defp do_assemble(opts, table_entries, body) do
     {table_iodata, table_size} =
-      case table_entries do
-        [] -> {[], 0}
-        _ -> {build_table(table_entries), 4 + table_bytes(table_entries)}
+      if opts.no_string_table do
+        {[], 0}
+      else
+        case table_entries do
+          [] -> {[], 0}
+          _ -> {build_table(table_entries), 4 + table_bytes(table_entries)}
+        end
       end
 
     {schema_iodata, schema_size} =
       case opts.schema do
-        nil -> {[], 0}
-        schema -> {build_schema(schema), schema_bytes(schema)}
+        nil ->
+          {[], 0}
+
+        schema ->
+          id_size = if opts.schema_id_uint16, do: 2, else: 4
+          {Schema.envelope(schema, id_size), Schema.envelope_size(schema, id_size)}
       end
 
     flags = compute_flags(opts, table_entries)
@@ -158,7 +209,6 @@ defmodule ToonEx.Btoon.Encode do
       zeroes(pad2),
       body
     ]
-    |> IO.iodata_to_binary()
   end
 
   defp build_table(entries) do
@@ -167,46 +217,34 @@ defmodule ToonEx.Btoon.Encode do
 
   defp table_bytes(entries), do: Enum.reduce(entries, 0, &(byte_size(&1) + 4 + &2))
 
-  defp build_schema(%Schema{id: id, name: name, fields: fields}) do
-    fields_iodata =
-      Enum.map(fields, fn %{name: field_name, type: type} ->
-        case ElementType.type_byte(type) do
-          nil -> raise EncodeError, message: "invalid schema field type", value: type
-          byte -> [<<byte_size(field_name)::32-little>>, field_name, <<byte>>]
-        end
-      end)
-
-    [
-      <<id::32-little>>,
-      <<byte_size(name)::32-little>>,
-      name,
-      <<length(fields)::32-little>>,
-      fields_iodata
-    ]
-  end
-
-  defp schema_bytes(%Schema{name: name, fields: fields}) do
-    4 + 4 + byte_size(name) + 4 +
-      Enum.reduce(fields, 0, fn %{name: field_name}, acc -> byte_size(field_name) + 5 + acc end)
-  end
-
   defp compute_flags(opts, table_entries) do
     flags =
-      if opts.dictionary && ToonEx.Btoon.Dictionary.size(opts.dictionary) > 0 do
+      if opts.dictionary && Btoon.Dictionary.size(opts.dictionary) > 0 do
         Constants.flag_session_dictionary()
       else
         0
       end
 
     flags =
-      if table_entries != [] do
-        Bitwise.bor(flags, Constants.flag_string_table())
+      if opts.no_string_table do
+        Bitwise.bor(flags, Constants.flag_no_string_table())
+      else
+        if table_entries != [] do
+          Bitwise.bor(flags, Constants.flag_string_table())
+        else
+          flags
+        end
+      end
+
+    flags =
+      if opts.schema do
+        Bitwise.bor(flags, Constants.flag_schema())
       else
         flags
       end
 
-    if opts.schema do
-      Bitwise.bor(flags, Constants.flag_schema())
+    if opts.schema_id_uint16 do
+      Bitwise.bor(flags, Constants.flag_schema_id_uint16())
     else
       flags
     end
@@ -216,36 +254,46 @@ defmodule ToonEx.Btoon.Encode do
 
   defmodule Ctx do
     @moduledoc false
-    # immutable fields
-    defstruct config: nil,
+    defstruct dictionary: %{},
+              session_size: 0,
+              string_table: :auto,
+              no_string_table: false,
+              schema_id_size: 4,
+              typed_arrays: true,
+              object_tables: true,
               table_ids: %{},
               table_rev: [],
               next_table_id: 0
   end
 
   defp new_ctx(opts) do
-    dictionary = opts.dictionary || ToonEx.Btoon.Dictionary.new([])
-    entries = ToonEx.Btoon.Dictionary.entries(dictionary)
-
-    dict_map = Enum.with_index(entries) |> Map.new()
-
-    config = %{
-      dictionary: dict_map,
-      session_size: length(entries),
-      string_table: opts.string_table,
-      typed_arrays: opts.typed_arrays,
-      object_tables: opts.object_tables
-    }
+    dictionary = opts.dictionary || Btoon.Dictionary.new([])
+    dict_lookup = Btoon.Dictionary.lookup(dictionary)
+    session_size = Btoon.Dictionary.size(dictionary)
 
     %Ctx{
-      config: config,
+      dictionary: dict_lookup,
+      session_size: session_size,
+      string_table: opts.string_table,
+      no_string_table: opts.no_string_table,
+      schema_id_size: if(opts.schema_id_uint16, do: 2, else: 4),
+      typed_arrays: opts.typed_arrays,
+      object_tables: opts.object_tables,
       table_ids: %{},
       table_rev: [],
-      next_table_id: length(entries)
+      next_table_id: session_size
     }
   end
 
-  defp get_config(ctx, key), do: Map.fetch!(ctx.config, key)
+  # Optimized context update - reuses the struct without creating new maps unnecessarily
+  defp update_table(%Ctx{} = ctx, string, id) do
+    %Ctx{
+      ctx
+      | table_ids: Map.put(ctx.table_ids, string, id),
+        table_rev: [string | ctx.table_rev],
+        next_table_id: id + 1
+    }
+  end
 
   # ── Value dispatch ──────────────────────────────────────────────────────────
 
@@ -264,25 +312,30 @@ defmodule ToonEx.Btoon.Encode do
 
   defp encode_value(value, _offset, ctx) when is_binary(value), do: encode_string(value, ctx)
 
-  defp encode_value(%ToonEx.Btoon.Binary{data: data}, _offset, ctx) do
-    {iodata, size} = encode_binary(data)
-    {iodata, size, ctx}
-  end
+  defp encode_value(%{__struct__: mod} = value, offset, ctx) do
+    case mod do
+      Btoon.Binary ->
+        {iodata, size} = encode_binary(value.data)
+        {iodata, size, ctx}
 
-  defp encode_value(%ToonEx.Btoon.TypedArray{} = typed_array, offset, ctx) do
-    encode_typed_array(typed_array, offset, ctx)
-  end
+      Btoon.TypedArray ->
+        encode_typed_array(value, offset, ctx)
 
-  defp encode_value(%ToonEx.Btoon.ObjectTable{} = object_table, offset, ctx) do
-    encode_object_table(object_table, offset, ctx)
+      Btoon.ObjectTable ->
+        encode_object_table(value, offset, ctx)
+
+      _other ->
+        {encoded, size, ctx} =
+          value
+          |> Btoon.Encoder.encode([])
+          |> encode_value(offset, ctx)
+
+        {encoded, size, ctx}
+    end
   end
 
   defp encode_value(value, offset, ctx) when is_list(value) do
     encode_list(value, offset, ctx)
-  end
-
-  defp encode_value(%{__struct__: struct} = value, _offset, _ctx) do
-    raise EncodeError, message: "cannot encode value of type #{inspect(struct)}", value: value
   end
 
   defp encode_value(value, offset, ctx) when is_map(value) do
@@ -336,12 +389,12 @@ defmodule ToonEx.Btoon.Encode do
   # (session entries first, then per-message entries).
 
   defp encode_string(string, ctx) do
-    case Map.fetch(get_config(ctx, :dictionary), string) do
+    case Map.fetch(ctx.dictionary, string) do
       {:ok, id} ->
         encode_string_ref_tuple(id, ctx)
 
       :error ->
-        if get_config(ctx, :string_table) == :off do
+        if ctx.no_string_table or ctx.string_table == :off do
           {<<Constants.tag_string(), byte_size(string)::32-little, string::binary>>,
            5 + byte_size(string), ctx}
         else
@@ -352,12 +405,7 @@ defmodule ToonEx.Btoon.Encode do
             :error ->
               id = ctx.next_table_id
 
-              ctx = %{
-                ctx
-                | table_ids: Map.put(ctx.table_ids, string, id),
-                  table_rev: [string | ctx.table_rev],
-                  next_table_id: id + 1
-              }
+              ctx = update_table(ctx, string, id)
 
               encode_string_ref_tuple(id, ctx)
           end
@@ -382,11 +430,11 @@ defmodule ToonEx.Btoon.Encode do
   # ── Arrays ──────────────────────────────────────────────────────────────────
 
   defp encode_list(list, offset, ctx) do
-    if get_config(ctx, :typed_arrays) do
+    if ctx.typed_arrays do
       case ElementType.detect_type(list) do
         {:ok, type} ->
           encode_typed_array(
-            %ToonEx.Btoon.TypedArray{type: type, data: ElementType.list_to_buffer(type, list)},
+            %Btoon.TypedArray{type: type, data: ElementType.list_to_buffer(type, list)},
             offset,
             ctx
           )
@@ -400,21 +448,21 @@ defmodule ToonEx.Btoon.Encode do
   end
 
   defp encode_list_fallback(list, offset, ctx) do
-    if get_config(ctx, :object_tables) do
+    if ctx.object_tables do
       case ElementType.detect_object_table(list) do
-        {:ok, names, types} ->
+        {:ok, names, types, columns_data} ->
           columns =
-            Enum.zip(names, types)
-            |> Enum.map(fn {name, type} ->
-              %ToonEx.Btoon.ObjectTable.Column{
+            Enum.zip([names, types, columns_data])
+            |> Enum.map(fn {name, type, values} ->
+              %Btoon.ObjectTable.Column{
                 name: name,
                 type: type,
-                data: ElementType.list_to_buffer(type, Enum.map(list, &Map.fetch!(&1, name)))
+                data: ElementType.list_to_buffer(type, values)
               }
             end)
 
           encode_object_table(
-            %ToonEx.Btoon.ObjectTable{row_count: length(list), columns: columns},
+            %Btoon.ObjectTable{row_count: length(list), columns: columns},
             offset,
             ctx
           )
@@ -428,78 +476,52 @@ defmodule ToonEx.Btoon.Encode do
   end
 
   defp encode_array_general(list, offset, ctx) do
-    {rev_iodata, size, ctx} = do_encode_items(list, offset + 5, ctx, [], 0)
+    {rev_iodata, count, size, ctx} = do_encode_items(list, offset + 5, ctx, [], 0, 0)
 
-    {[<<Constants.tag_array(), length(list)::32-little>> | :lists.reverse(rev_iodata)], 5 + size,
-     ctx}
+    {[<<Constants.tag_array(), count::32-little>> | :lists.reverse(rev_iodata)], 5 + size, ctx}
   end
 
-  defp do_encode_items([], _offset, ctx, acc, size), do: {acc, size, ctx}
+  defp do_encode_items([], _offset, ctx, acc, count, size), do: {acc, count, size, ctx}
 
-  defp do_encode_items([item | rest], offset, ctx, acc, size) do
+  defp do_encode_items([item | rest], offset, ctx, acc, count, size) do
     {iodata, item_size, ctx} = encode_value(item, offset, ctx)
-    do_encode_items(rest, offset + item_size, ctx, [iodata | acc], size + item_size)
+    do_encode_items(rest, offset + item_size, ctx, [iodata | acc], count + 1, size + item_size)
   end
 
   # ── Objects ─────────────────────────────────────────────────────────────────
 
   defp encode_object(map, offset, ctx) do
-    keys = map |> Map.keys()
+    pairs = Map.to_list(map)
 
-    if all_binary_keys?(keys) do
-      sorted = Enum.sort(keys)
-      {rev_iodata, size, ctx} = do_encode_pairs(sorted, map, offset + 5, ctx, [], 0)
+    if all_binary_keys?(pairs) do
+      sorted = Enum.sort(pairs)
+      {rev_iodata, size, ctx} = do_encode_pairs(sorted, offset + 5, ctx, [], 0)
 
-      {[
-         <<Constants.tag_object(), length(sorted)::32-little>> | :lists.reverse(rev_iodata)
-       ], 5 + size, ctx}
+      {[<<Constants.tag_object(), map_size(map)::32-little>> | :lists.reverse(rev_iodata)],
+       5 + size, ctx}
     else
-      # Stringify keys and keep the original key for value lookup (matching the
-      # pre-normalization semantics: later duplicates overwrite earlier ones).
-      key_map = Enum.reduce(map, %{}, fn {k, _v}, acc -> Map.put(acc, to_string(k), k) end)
-      sorted = key_map |> Map.keys() |> Enum.sort()
-
-      {rev_iodata, size, ctx} =
-        do_encode_pairs(sorted, key_map, map, offset + 5, ctx, [], 0)
+      # Stringify keys; later duplicates overwrite earlier ones — same semantics as before.
+      stringified = Map.new(pairs, fn {k, v} -> {to_string(k), v} end)
+      sorted = Enum.sort(stringified)
+      {rev_iodata, size, ctx} = do_encode_pairs(sorted, offset + 5, ctx, [], 0)
 
       {[
-         <<Constants.tag_object(), length(sorted)::32-little>> | :lists.reverse(rev_iodata)
+         <<Constants.tag_object(), map_size(stringified)::32-little>> | :lists.reverse(rev_iodata)
        ], 5 + size, ctx}
     end
   end
 
-  defp all_binary_keys?(keys), do: Enum.all?(keys, &is_binary/1)
+  defp all_binary_keys?(pairs), do: Enum.all?(pairs, fn {k, _v} -> is_binary(k) end)
 
-  defp do_encode_pairs([], _map, _offset, ctx, acc, size), do: {acc, size, ctx}
+  # Replaces both do_encode_pairs/6 and do_encode_pairs/7 — one unified arity.
+  defp do_encode_pairs([], _offset, ctx, acc, size), do: {acc, size, ctx}
 
-  defp do_encode_pairs([key | rest], map, offset, ctx, acc, size) do
+  defp do_encode_pairs([{key, value} | rest], offset, ctx, acc, size) do
     {key_iodata, key_size, ctx} = encode_string(key, ctx)
-
-    {value_iodata, value_size, ctx} =
-      encode_value(Map.fetch!(map, key), offset + key_size, ctx)
+    {value_iodata, value_size, ctx} = encode_value(value, offset + key_size, ctx)
 
     do_encode_pairs(
       rest,
-      map,
-      offset + key_size + value_size,
-      ctx,
-      [value_iodata, key_iodata | acc],
-      size + key_size + value_size
-    )
-  end
-
-  defp do_encode_pairs([], _key_map, _map, _offset, ctx, acc, size), do: {acc, size, ctx}
-
-  defp do_encode_pairs([key | rest], key_map, map, offset, ctx, acc, size) do
-    {key_iodata, key_size, ctx} = encode_string(key, ctx)
-
-    {value_iodata, value_size, ctx} =
-      encode_value(Map.fetch!(map, Map.fetch!(key_map, key)), offset + key_size, ctx)
-
-    do_encode_pairs(
-      rest,
-      key_map,
-      map,
       offset + key_size + value_size,
       ctx,
       [value_iodata, key_iodata | acc],
@@ -509,7 +531,7 @@ defmodule ToonEx.Btoon.Encode do
 
   # ── Typed arrays ────────────────────────────────────────────────────────────
 
-  defp encode_typed_array(%ToonEx.Btoon.TypedArray{type: type, data: data}, offset, ctx) do
+  defp encode_typed_array(%Btoon.TypedArray{type: type, data: data}, offset, ctx) do
     elem_size = ElementType.element_size(type)
     count = div(byte_size(data), elem_size)
     # Buffer begins at offset + 7 (tag + element type + count + pad-length byte).
@@ -528,10 +550,24 @@ defmodule ToonEx.Btoon.Encode do
   # ── Object tables ───────────────────────────────────────────────────────────
 
   defp encode_object_table(
-         %ToonEx.Btoon.ObjectTable{row_count: row_count, columns: columns},
+         %Btoon.ObjectTable{row_count: row_count, columns: columns},
          offset,
          ctx
        ) do
+    # When session dictionary is active, column names MUST be StringRef (per spec §14)
+    # This means they must be present in the session dictionary.
+    if ctx.session_size > 0 do
+      Enum.each(columns, fn column ->
+        unless Map.has_key?(ctx.dictionary, column.name) do
+          raise EncodeError,
+            message:
+              "ObjectTable column name #{inspect(column.name)} not in session dictionary; " <>
+                "when session dictionary is active, all column names must be present in it",
+            value: column.name
+        end
+      end)
+    end
+
     {col_iodata, col_size, ctx} = do_encode_columns(columns, row_count, offset + 9, ctx, [], 0)
 
     {[
@@ -582,8 +618,9 @@ defmodule ToonEx.Btoon.Encode do
   # ── Schema mode ─────────────────────────────────────────────────────────────
 
   defp encode_schema_body(%Schema{id: id, fields: fields}, map, ctx) do
-    {rev_iodata, size, ctx} = do_encode_fields(fields, map, 4, ctx, [], 0)
-    {[<<id::32-little>> | :lists.reverse(rev_iodata)], 4 + size, ctx}
+    {rev_iodata, size, ctx} = do_encode_fields(fields, map, ctx.schema_id_size, ctx, [], 0)
+    id_iodata = if ctx.schema_id_size == 2, do: <<id::16-little>>, else: <<id::32-little>>
+    {[id_iodata | :lists.reverse(rev_iodata)], ctx.schema_id_size + size, ctx}
   end
 
   defp do_encode_fields([], _map, _offset, ctx, acc, size), do: {acc, size, ctx}
@@ -641,7 +678,7 @@ defmodule ToonEx.Btoon.Encode do
     raise EncodeError, message: "string schema field requires a binary", value: value
   end
 
-  defp encode_field(:binary, %ToonEx.Btoon.Binary{data: data}, _offset, ctx) do
+  defp encode_field(:binary, %Btoon.Binary{data: data}, _offset, ctx) do
     {iodata, size} = encode_binary(data)
     {iodata, size, ctx}
   end

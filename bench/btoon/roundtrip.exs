@@ -10,8 +10,8 @@ inputs =
 
 Benchee.run(
   %{
-    "ToonEx.Btoon roundtrip" => fn input ->
-      input |> ToonEx.Btoon.encode!() |> ToonEx.Btoon.decode!()
+    "Btoon roundtrip" => fn input ->
+      input |> Btoon.encode!() |> ToonEx.Btoon.decode!()
     end,
     "ToonEx roundtrip" => fn input ->
       input |> ToonEx.encode!() |> ToonEx.decode!()

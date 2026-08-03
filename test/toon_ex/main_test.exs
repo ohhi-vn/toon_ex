@@ -60,7 +60,8 @@ defmodule ToonEx.MainTest do
     end
 
     test "raises on struct without encoder when using encode_to_iodata!" do
-      # encode_to_iodata! uses the Encoder protocol which will fail for structs without implementation
+      # encode_to_iodata! uses the Encoder protocol and fails for structs
+      # without an implementation.
       struct = %ToonEx.Fixtures.StructWithoutEncoder{id: 1, value: "test"}
       assert_raise ToonEx.EncodeError, fn -> ToonEx.encode_to_iodata!(struct) end
     end

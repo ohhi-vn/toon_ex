@@ -9,8 +9,10 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
   """
   use ExUnit.Case, async: true
 
+  alias ToonEx.Btoon
+
   defp assert_rt(value, opts \\ []) do
-    decoded = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(value, opts))
+    decoded = Btoon.decode!(Btoon.encode!(value, opts))
 
     assert decoded == value,
            "Roundtrip failed\nInput:   #{inspect(value)}\nDecoded: #{inspect(decoded)}"
@@ -96,7 +98,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
     end
 
     test "large float" do
-      assert_rt(1.23456789e15)
+      assert_rt(1.234_567_89e15)
     end
   end
 
@@ -116,7 +118,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
     end
 
     test "atom keys encode as strings and decode back" do
-      decoded = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(%{a: 1, b: 2}))
+      decoded = Btoon.decode!(Btoon.encode!(%{a: 1, b: 2}))
       assert decoded == %{"a" => 1, "b" => 2}
     end
 
@@ -153,7 +155,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
     end
 
     test "integer keys are stringified" do
-      decoded = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(%{1 => "one", 2 => "two"}))
+      decoded = Btoon.decode!(Btoon.encode!(%{1 => "one", 2 => "two"}))
       assert decoded == %{"1" => "one", "2" => "two"}
     end
   end
@@ -182,7 +184,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
     end
 
     test "list of atoms encodes as strings" do
-      assert ToonEx.Btoon.decode!(ToonEx.Btoon.encode!([:a, :b])) == ["a", "b"]
+      assert Btoon.decode!(Btoon.encode!([:a, :b])) == ["a", "b"]
     end
 
     test "mixed primitive list" do
@@ -290,7 +292,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
   describe "schema mode" do
     test "schema-encoded values round-trip with and without embedded schema" do
       schema =
-        ToonEx.Btoon.Schema.new(7, "T", [
+        Btoon.Schema.new(7, "T", [
           %{name: "id", type: :int32},
           %{name: "name", type: :string},
           %{name: "score", type: :float32}
@@ -298,7 +300,7 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
 
       value = %{"id" => 3, "name" => "hero", "score" => 1.5}
 
-      assert ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(value, schema: schema)) == value
+      assert Btoon.decode!(Btoon.encode!(value, schema: schema)) == value
     end
   end
 
@@ -319,16 +321,16 @@ defmodule ToonEx.Btoon.Roundtrip.FullTest do
 
     test "keys: :atoms on decode" do
       value = %{"name" => "Alice", "age" => 30}
-      bin = ToonEx.Btoon.encode!(value)
-      assert ToonEx.Btoon.decode!(bin, keys: :atoms) == %{name: "Alice", age: 30}
+      bin = Btoon.encode!(value)
+      assert Btoon.decode!(bin, keys: :atoms) == %{name: "Alice", age: 30}
     end
 
     test "dictionary session round-trips" do
-      dict = ToonEx.Btoon.Dictionary.new(["name"])
+      dict = Btoon.Dictionary.new(["name"])
       value = %{"name" => "Alice", "extra" => "value"}
-      bin = ToonEx.Btoon.encode!(value, dictionary: dict)
+      bin = Btoon.encode!(value, dictionary: dict)
 
-      assert ToonEx.Btoon.decode!(bin, dictionary: dict) == value
+      assert Btoon.decode!(bin, dictionary: dict) == value
     end
   end
 end

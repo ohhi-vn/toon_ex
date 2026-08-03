@@ -10,9 +10,11 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
   """
   use ExUnit.Case, async: true
 
+  alias ToonEx.Btoon
+
   defp rt(value, opts) do
-    encoded = ToonEx.Btoon.encode!(value, opts)
-    decoded = ToonEx.Btoon.decode!(encoded)
+    encoded = Btoon.encode!(value, opts)
+    decoded = Btoon.decode!(encoded)
     {encoded, decoded, value}
   end
 
@@ -24,8 +26,8 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
   end
 
   defp assert_idempotent(value, opts \\ []) do
-    e1 = ToonEx.Btoon.encode!(value, opts)
-    e2 = ToonEx.Btoon.encode!(ToonEx.Btoon.decode!(e1), opts)
+    e1 = Btoon.encode!(value, opts)
+    e2 = Btoon.encode!(Btoon.decode!(e1), opts)
     assert e1 == e2, "Re-encode is not byte-stable"
   end
 
@@ -108,9 +110,9 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
 
     test "exceeding max_depth raises DecodeError" do
       deep = Enum.reduce(1..150, %{"leaf" => "x"}, fn i, acc -> %{"level_#{i}" => acc} end)
-      bin = ToonEx.Btoon.encode!(deep, string_table: :off)
+      bin = Btoon.encode!(deep, string_table: :off)
 
-      assert_raise ToonEx.Btoon.DecodeError, fn -> ToonEx.Btoon.decode!(bin) end
+      assert_raise Btoon.DecodeError, fn -> Btoon.decode!(bin) end
     end
   end
 
@@ -262,7 +264,7 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
     end
 
     test "mega document output is large" do
-      enc = ToonEx.Btoon.encode!(mega())
+      enc = Btoon.encode!(mega())
       assert byte_size(enc) > 5_000
     end
 
@@ -271,8 +273,8 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
     end
 
     test "decode → encode → decode on mega document is stable" do
-      d1 = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(mega()))
-      d2 = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(d1))
+      d1 = Btoon.decode!(Btoon.encode!(mega()))
+      d2 = Btoon.decode!(Btoon.encode!(d1))
       assert d1 == d2
     end
   end
@@ -297,16 +299,16 @@ defmodule ToonEx.Btoon.LargeObjectRoundtripTest do
 
     test "keys: :atoms on a large document" do
       data = Map.new(1..100, fn i -> {"key_#{i}", i} end)
-      decoded = ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(data), keys: :atoms)
+      decoded = Btoon.decode!(Btoon.encode!(data), keys: :atoms)
       assert decoded[:key_1] == 1
       assert decoded[:key_100] == 100
     end
 
     test "re-encode after keys: :atoms decode is byte-stable" do
       data = Map.new(1..100, fn i -> {"key_#{i}", i} end)
-      e1 = ToonEx.Btoon.encode!(data)
-      atom_decoded = ToonEx.Btoon.decode!(e1, keys: :atoms)
-      assert ToonEx.Btoon.encode!(atom_decoded) == e1
+      e1 = Btoon.encode!(data)
+      atom_decoded = Btoon.decode!(e1, keys: :atoms)
+      assert Btoon.encode!(atom_decoded) == e1
     end
   end
 end

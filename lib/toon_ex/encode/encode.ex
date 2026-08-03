@@ -136,7 +136,7 @@ defmodule ToonEx.Encode do
     |> IO.iodata_to_binary()
   rescue
     e in EncodeError -> reraise e, __STACKTRACE__
-    e -> raise EncodeError, message: Exception.message(e), value: data
+    e -> reraise EncodeError, [message: Exception.message(e), value: data], __STACKTRACE__
   end
 
   # Private functions

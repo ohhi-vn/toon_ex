@@ -1,6 +1,7 @@
 defmodule ToonEx.Btoon.SchemaTest do
   use ExUnit.Case, async: true
 
+  alias ToonEx.Btoon
   alias ToonEx.Btoon.Schema
 
   defp player_schema do
@@ -31,9 +32,9 @@ defmodule ToonEx.Btoon.SchemaTest do
         "meta" => %{"level" => 99}
       }
 
-      bin = ToonEx.Btoon.encode!(value, schema: player_schema())
+      bin = Btoon.encode!(value, schema: player_schema())
       assert <<66, 84, 79, 78, 1, 6, 0, 0, _::binary>> = bin
-      assert ToonEx.Btoon.decode!(bin) == value
+      assert Btoon.decode!(bin) == value
     end
 
     test "string fields use StringRefs" do
@@ -41,7 +42,7 @@ defmodule ToonEx.Btoon.SchemaTest do
         Schema.new(1, "Named", [%{name: "name", type: :string}, %{name: "id", type: :int32}])
 
       value = %{"name" => "hero", "id" => 1}
-      assert ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(value, schema: schema)) == value
+      assert Btoon.decode!(Btoon.encode!(value, schema: schema)) == value
     end
 
     test "negative and boundary integers" do
@@ -62,42 +63,48 @@ defmodule ToonEx.Btoon.SchemaTest do
         "e" => 1.1
       }
 
-      assert ToonEx.Btoon.decode!(ToonEx.Btoon.encode!(value, schema: schema)) == value
+      assert Btoon.decode!(Btoon.encode!(value, schema: schema)) == value
     end
   end
 
   describe "schema errors" do
     test "missing field raises" do
-      assert_raise ToonEx.Btoon.EncodeError, fn ->
-        ToonEx.Btoon.encode!(%{"id" => 1}, schema: player_schema())
+      assert_raise Btoon.EncodeError, fn ->
+        Btoon.encode!(%{"id" => 1}, schema: player_schema())
       end
     end
 
     test "type mismatch raises" do
-      assert_raise ToonEx.Btoon.EncodeError, fn ->
-        ToonEx.Btoon.encode!(%{"name" => 42}, schema: player_schema())
+      assert_raise Btoon.EncodeError, fn ->
+        Btoon.encode!(%{"name" => 42}, schema: player_schema())
       end
     end
 
     test "integer overflow raises" do
       schema = Schema.new(2, "T", [%{name: "v", type: :int8}])
 
-      assert_raise ToonEx.Btoon.EncodeError, fn ->
-        ToonEx.Btoon.encode!(%{"v" => 128}, schema: schema)
+      assert_raise Btoon.EncodeError, fn ->
+        Btoon.encode!(%{"v" => 128}, schema: schema)
       end
     end
 
     test "schema mode requires a map" do
-      assert_raise ToonEx.Btoon.EncodeError, fn ->
-        ToonEx.Btoon.encode!([1], schema: player_schema())
+      assert_raise Btoon.EncodeError, fn ->
+        Btoon.encode!([1], schema: player_schema())
       end
     end
 
-    test "invalid schema field type raises" do
-      schema = Schema.new(3, "Bad", [%{name: "v", type: :unknown}])
+    test "schema id can use compact UInt16 form" do
+      schema = Schema.new(42, "P", [%{name: "x", type: :int32}])
+      bin = Btoon.encode!(%{"x" => 7}, schema: schema, schema_id_uint16: true)
 
-      assert_raise ToonEx.Btoon.EncodeError, fn ->
-        ToonEx.Btoon.encode!(%{"v" => 1}, schema: schema)
+      assert Bitwise.band(:binary.at(bin, 5), 0x20) == 0x20
+      assert Btoon.decode!(bin) == %{"x" => 7}
+    end
+
+    test "invalid schema field type raises" do
+      assert_raise ArgumentError, fn ->
+        Schema.new(3, "Bad", [%{name: "v", type: :unknown}])
       end
     end
   end
@@ -110,7 +117,7 @@ defmodule ToonEx.Btoon.SchemaTest do
       bin =
         <<66, 84, 79, 78, 1, 0, 0, 0, 10, 0, 0, 0, 1, 0, 0, 0, 0, 0, 32, 64>>
 
-      assert ToonEx.Btoon.decode!(bin, schema: schema) == %{"a" => 1, "b" => 2.5}
+      assert Btoon.decode!(bin, schema: schema) == %{"a" => 1, "b" => 2.5}
     end
   end
 

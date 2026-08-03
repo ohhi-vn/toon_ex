@@ -34,7 +34,7 @@ defmodule ToonEx.JSON do
       JSON.decode!(json)
     rescue
       e in JSON.DecodeError ->
-        raise RuntimeError, message: "Invalid JSON: #{Exception.message(e)}"
+        reraise RuntimeError, [message: "Invalid JSON: #{Exception.message(e)}"], __STACKTRACE__
     end
     |> ToonEx.encode!()
   end

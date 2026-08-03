@@ -216,7 +216,7 @@ defmodule ToonEx.Phoenix.SerializerTest do
 
       {:socket_push, :binary, bin} = Serializer.encode!(msg)
 
-      # Binary push format: push(0), join_ref_size, topic_size, event_size, join_ref, topic, event, data
+      # Binary push format: push(0), sizes, join_ref, topic, event, data.
       <<0::size(8), join_ref_size::size(8), topic_size::size(8), event_size::size(8),
         join_ref::binary-size(join_ref_size), topic::binary-size(topic_size),
         event::binary-size(event_size), data::binary>> = bin
@@ -334,9 +334,8 @@ defmodule ToonEx.Phoenix.SerializerTest do
 
       {:socket_push, :binary, bin} = Serializer.encode!(msg)
 
-      # decode_binary expects: push(0), join_ref_size, ref_size, topic_size, event_size, join_ref, ref, topic, event, data
-      # But encode! produces: push(0), join_ref_size, topic_size, event_size, join_ref, topic, event, data
-      # Format mismatch - decode_binary can't decode this
+      # decode_binary expects a ref field, but encode! omits it.
+      # Therefore, decode_binary cannot decode this output.
       assert_raise FunctionClauseError, fn ->
         Serializer.decode!(bin, opcode: :binary)
       end

@@ -7,6 +7,8 @@ defmodule ToonEx.SpecComplianceTest do
 
   use ExUnit.Case, async: true
 
+  alias ToonEx.Encode
+
   describe "Bug 1 & 8: Field names use active delimiter (TOON spec Section 6)" do
     test "tabular array with tab delimiter uses tab in field names" do
       # Per spec Section 6: "The same delimiter symbol declared in the bracket
@@ -279,44 +281,44 @@ defmodule ToonEx.SpecComplianceTest do
 
       # Integers should be quoted
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("42", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("42", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("-42", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("-42", ",")),
                "\""
              )
 
       # Decimals should be quoted
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("3.14", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("3.14", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("-3.14", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("-3.14", ",")),
                "\""
              )
 
       # Exponent notation should be quoted
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("1e6", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("1e6", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("1E6", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("1E6", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("1e+6", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("1e+6", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("1e-6", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("1e-6", ",")),
                "\""
              )
     end
@@ -327,27 +329,27 @@ defmodule ToonEx.SpecComplianceTest do
       # Note: "05" starts with "0" followed by digit, which matches /^0\d+$/ per spec Section 7.2
       # so it SHOULD be quoted as numeric-like
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("05", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("05", ",")),
                "\""
              )
 
       assert String.starts_with?(
-               IO.iodata_to_binary(ToonEx.Encode.Strings.encode_string("007", ",")),
+               IO.iodata_to_binary(Encode.Strings.encode_string("007", ",")),
                "\""
              )
 
       # Strings with internal spaces are safe unquoted per spec Section 7.2
       # (only leading/trailing spaces require quoting)
-      assert ToonEx.Encode.Strings.encode_string("1 2", ",") == "1 2"
+      assert Encode.Strings.encode_string("1 2", ",") == "1 2"
     end
 
     test "Float.parse edge cases don't trigger false positives" do
       # These should NOT be treated as numbers by the regex
       # Underscores in numbers (Elixir style) - not valid per spec regex
-      assert ToonEx.Encode.Strings.encode_string("1_000", ",") == "1_000"
+      assert Encode.Strings.encode_string("1_000", ",") == "1_000"
 
       # Leading dot without digit before - not valid per spec regex
-      assert ToonEx.Encode.Strings.encode_string(".5", ",") == ".5"
+      assert Encode.Strings.encode_string(".5", ",") == ".5"
     end
   end
 

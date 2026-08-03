@@ -37,3 +37,32 @@ defmodule ToonEx.Fixtures.StructWithoutEncoder do
   @moduledoc "Test struct without ToonEx.Encoder implementation"
   defstruct [:id, :value]
 end
+
+defmodule ToonEx.BtoonFixtures.DerivedUser do
+  @moduledoc false
+  @derive {ToonEx.Btoon.Encoder, only: [:name, :email]}
+  defstruct [:id, :name, :email, :password_hash]
+end
+
+defmodule ToonEx.BtoonFixtures.DerivedExcept do
+  @moduledoc false
+  @derive {ToonEx.Btoon.Encoder, except: [:secret]}
+  defstruct [:name, :secret, :role]
+end
+
+defmodule ToonEx.BtoonFixtures.DerivedAll do
+  @moduledoc false
+  @derive ToonEx.Btoon.Encoder
+  defstruct [:a, :b]
+end
+
+defmodule ToonEx.BtoonFixtures.ImplHelperUser do
+  @moduledoc false
+  defstruct [:name, :value]
+
+  def new(name, value), do: %__MODULE__{name: name, value: value}
+end
+
+defimpl ToonEx.Btoon.Encoder, for: ToonEx.BtoonFixtures.ImplHelperUser do
+  def encode(%{name: name, value: value}, _opts), do: %{"name" => name, "value" => value}
+end

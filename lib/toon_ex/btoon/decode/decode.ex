@@ -17,7 +17,7 @@ defmodule ToonEx.Btoon.Decode do
 
   ## API
 
-      iex> {:ok, value} = ToonEx.Btoon.Decode.decode(<<66, 84, 79, 78, 1, 0, 0, 0, 106>>)
+      iex> {:ok, value} = Btoon.Decode.decode(<<66, 84, 79, 78, 1, 0, 0, 0, 106>>)
       iex> value
       42
   """
@@ -61,7 +61,7 @@ defmodule ToonEx.Btoon.Decode do
   end
 
   @doc """
-  Decodes a BTOON binary, raising `ToonEx.Btoon.DecodeError` on error.
+  Decodes a BTOON binary, raising `Btoon.DecodeError` on error.
   """
   @spec decode!(binary(), keyword()) :: term()
   def decode!(binary, opts \\ []) do
@@ -69,20 +69,56 @@ defmodule ToonEx.Btoon.Decode do
     do_decode(binary, validated)
   rescue
     e in DecodeError -> reraise e, __STACKTRACE__
-    e -> raise DecodeError, message: Exception.message(e), input: binary
+    e -> reraise DecodeError, [message: Exception.message(e), input: binary], __STACKTRACE__
+  end
+
+  @doc """
+  Decodes a BTOON binary using pre-validated options.
+
+  This skips option re-validation, improving throughput for repeated decoding
+  with the same options. Returns `{:ok, value}` or `{:error, Btoon.DecodeError.t()}`.
+  """
+  @spec decode_validated(binary(), Options.validated()) ::
+          {:ok, term()} | {:error, ToonEx.Btoon.DecodeError.t()}
+  def decode_validated(binary, validated_opts) when is_binary(binary) do
+    {:ok, do_decode(binary, validated_opts)}
+  rescue
+    e in DecodeError -> {:error, e}
+    e -> {:error, DecodeError.exception(message: Exception.message(e), input: binary)}
+  end
+
+  @doc """
+  Decodes a BTOON binary using pre-validated options, raising `Btoon.DecodeError` on error.
+  """
+  @spec decode_validated!(binary(), Options.validated()) :: term()
+  def decode_validated!(binary, validated_opts) when is_binary(binary) do
+    do_decode(binary, validated_opts)
+  rescue
+    e in DecodeError -> reraise e, __STACKTRACE__
+    e -> reraise DecodeError, [message: Exception.message(e), input: binary], __STACKTRACE__
   end
 
   defp do_decode(binary, opts) when is_binary(binary) do
-    {strings, schema, body_offset} = parse_envelope(binary, opts)
-    ctx = new_ctx(strings, opts)
+    {strings, schema, body_offset, schema_id_size} = parse_envelope(binary, opts)
+    {ctx_strings, ctx_keys, ctx_arrays, limits} = new_ctx(strings, opts)
 
     case schema do
       nil ->
+        ctx = {ctx_strings, ctx_keys, ctx_arrays, limits}
         {value, _next} = decode_value(binary, body_offset, ctx, opts.max_depth)
         value
 
       schema ->
-        decode_schema_body(binary, body_offset, schema, ctx, opts.max_depth)
+        decode_schema_body(
+          binary,
+          body_offset,
+          schema,
+          ctx_strings,
+          ctx_keys,
+          ctx_arrays,
+          limits,
+          schema_id_size
+        )
     end
   end
 
@@ -110,8 +146,19 @@ defmodule ToonEx.Btoon.Decode do
 
     offset = Constants.header_size()
 
+    has_table = Bitwise.band(flags, Constants.flag_string_table()) != 0
+    no_table = Bitwise.band(flags, Constants.flag_no_string_table()) != 0
+
+    if has_table and no_table do
+      raise DecodeError,
+        message: "string table and no-string-table flags are mutually exclusive",
+        input: bin,
+        offset: 5,
+        reason: :invalid_flags
+    end
+
     {table_entries, offset} =
-      if Bitwise.band(flags, Constants.flag_string_table()) != 0 do
+      if has_table do
         parse_table(bin, offset)
       else
         {[], offset}
@@ -119,22 +166,34 @@ defmodule ToonEx.Btoon.Decode do
 
     offset = offset + pad_to(offset, 8)
 
+    schema_id_size =
+      if Bitwise.band(flags, Constants.flag_schema_id_uint16()) != 0, do: 2, else: 4
+
     {schema, offset} =
       if Bitwise.band(flags, Constants.flag_schema()) != 0 do
-        parse_schema(bin, offset)
+        parse_schema(bin, offset, schema_id_size)
       else
         {opts.schema, offset}
       end
 
     offset = offset + pad_to(offset, 8)
 
-    session_entries =
+    session_entries_tuple =
       case opts.dictionary do
-        nil -> []
-        dict -> ToonEx.Btoon.Dictionary.entries(dict)
+        nil -> {}
+        dict -> dict.entries_tuple
       end
 
-    {List.to_tuple(session_entries ++ table_entries), schema, offset}
+    table_entries_list =
+      case table_entries do
+        [] -> []
+        entries -> entries
+      end
+
+    # Combine session entries tuple and table entries list into a single tuple
+    strings = List.to_tuple(Tuple.to_list(session_entries_tuple) ++ table_entries_list)
+
+    {strings, schema, offset, schema_id_size}
   end
 
   defp parse_table(bin, offset) do
@@ -150,11 +209,19 @@ defmodule ToonEx.Btoon.Decode do
     parse_table_entries(count - 1, bin, offset + 4 + len, [string | acc])
   end
 
-  defp parse_schema(bin, offset) do
-    <<id::32-little>> = take!(bin, offset, 4, "schema id")
-    <<name_len::32-little>> = take!(bin, offset + 4, 4, "schema name length")
-    name = take!(bin, offset + 8, name_len, "schema name")
-    offset = offset + 8 + name_len
+  defp parse_schema(bin, offset, schema_id_size) do
+    {id, offset} =
+      if schema_id_size == 2 do
+        <<id::16-little>> = take!(bin, offset, 2, "schema id")
+        {id, offset + 2}
+      else
+        <<id::32-little>> = take!(bin, offset, 4, "schema id")
+        {id, offset + 4}
+      end
+
+    <<name_len::32-little>> = take!(bin, offset, 4, "schema name length")
+    name = take!(bin, offset + 4, name_len, "schema name")
+    offset = offset + 4 + name_len
     <<field_count::32-little>> = take!(bin, offset, 4, "schema field count")
     {fields, offset} = parse_schema_fields(field_count, bin, offset + 4, [])
     {%Schema{id: id, name: name, fields: fields}, offset}
@@ -182,19 +249,20 @@ defmodule ToonEx.Btoon.Decode do
 
   # ── Context ─────────────────────────────────────────────────────────────────
 
-  defmodule Ctx do
-    @moduledoc false
-    defstruct strings: {},
-              keys: :strings,
-              typed_arrays: :lists
-  end
+  # Context is now a tuple: {strings, keys, typed_arrays}
+  # strings: tuple of strings for O(1) indexed access
+  # keys: :strings | :atoms | :atoms!
+  # typed_arrays: :lists | :views
 
   defp new_ctx(strings, opts) do
-    %Ctx{
-      strings: strings,
-      keys: opts.keys,
-      typed_arrays: opts.typed_arrays
+    limits = %{
+      max_string_size: opts.max_string_size,
+      max_binary_size: opts.max_binary_size,
+      max_container_count: opts.max_container_count,
+      max_depth: opts.max_depth
     }
+
+    {strings, opts.keys, opts.typed_arrays, limits}
   end
 
   # ── Value dispatch ──────────────────────────────────────────────────────────
@@ -202,6 +270,8 @@ defmodule ToonEx.Btoon.Decode do
   # Returns {value, next_offset}. `offset` is absolute in `bin`.
 
   defp decode_value(bin, offset, ctx, depth) do
+    {strings, keys, typed_arrays, limits} = ctx
+
     if depth <= 0 do
       raise DecodeError,
         message: "maximum nesting depth exceeded",
@@ -238,25 +308,25 @@ defmodule ToonEx.Btoon.Decode do
         {read_float64(bin, offset + 1), offset + 9}
 
       0x07 ->
-        decode_string(bin, offset)
+        decode_string(bin, offset, limits)
 
       0x08 ->
-        decode_binary(bin, offset)
+        decode_binary(bin, offset, limits)
 
       0x09 ->
-        decode_array(bin, offset, ctx, depth)
+        decode_array(bin, offset, strings, keys, typed_arrays, depth, limits)
 
       0x0A ->
-        decode_object(bin, offset, ctx, depth)
+        decode_object(bin, offset, strings, keys, typed_arrays, depth, limits)
 
       0x0B ->
-        decode_ref(bin, offset, ctx)
+        decode_ref(bin, offset, strings)
 
       0x0C ->
-        decode_typed_array(bin, offset, ctx)
+        decode_typed_array(bin, offset, strings, keys, typed_arrays, limits)
 
       0x0D ->
-        decode_object_table(bin, offset, ctx)
+        decode_object_table(bin, offset, strings, keys, typed_arrays, limits)
 
       _ ->
         raise DecodeError,
@@ -289,28 +359,30 @@ defmodule ToonEx.Btoon.Decode do
 
   # ── Strings & references ────────────────────────────────────────────────────
 
-  defp decode_string(bin, offset) do
+  defp decode_string(bin, offset, limits) do
     <<len::32-little>> = take!(bin, offset + 1, 4, "string length")
+    enforce_limit!(len, limits.max_string_size, bin, offset, :max_string_size)
     string = take!(bin, offset + 5, len, "string data")
     {string, offset + 5 + len}
   end
 
-  defp decode_binary(bin, offset) do
+  defp decode_binary(bin, offset, limits) do
     <<len::32-little>> = take!(bin, offset + 1, 4, "binary length")
+    enforce_limit!(len, limits.max_binary_size, bin, offset, :max_binary_size)
     data = take!(bin, offset + 5, len, "binary data")
     {%Binary{data: data}, offset + 5 + len}
   end
 
   # String field/key: a full string tag or a StringRef.
-  defp decode_string_or_ref(bin, offset, ctx) do
+  defp decode_string_or_ref(bin, offset, strings, limits) do
     tag = byte!(bin, offset)
 
     cond do
       tag == Constants.tag_string() ->
-        decode_string(bin, offset)
+        decode_string(bin, offset, limits)
 
       tag == Constants.tag_string_ref() ->
-        decode_ref(bin, offset, ctx)
+        decode_ref(bin, offset, strings)
 
       true ->
         raise DecodeError,
@@ -321,11 +393,11 @@ defmodule ToonEx.Btoon.Decode do
     end
   end
 
-  defp decode_ref(bin, offset, ctx) do
+  defp decode_ref(bin, offset, strings) do
     {id, offset} = decode_int(bin, offset + 1)
 
-    if id >= 0 and id < :erlang.tuple_size(ctx.strings) do
-      {:erlang.element(id + 1, ctx.strings), offset}
+    if id >= 0 and id < :erlang.tuple_size(strings) do
+      {:erlang.element(id + 1, strings), offset}
     else
       raise DecodeError,
         message: "string ref #{id} out of range",
@@ -360,40 +432,60 @@ defmodule ToonEx.Btoon.Decode do
 
   # ── Arrays ──────────────────────────────────────────────────────────────────
 
-  defp decode_array(bin, offset, ctx, depth) do
+  defp decode_array(bin, offset, strings, keys, typed_arrays, depth, limits) do
     <<count::32-little>> = take!(bin, offset + 1, 4, "array count")
-    {values, offset} = decode_items(count, bin, offset + 5, ctx, depth, [])
+    enforce_limit!(count, limits.max_container_count, bin, offset, :max_container_count)
+
+    {values, offset} =
+      decode_items(count, bin, offset + 5, {strings, keys, typed_arrays, limits}, depth, [])
+
     {values, offset}
   end
 
-  defp decode_items(0, _bin, offset, _ctx, _depth, acc), do: {:lists.reverse(acc), offset}
+  defp decode_items(0, _bin, offset, _ctx, _depth, acc),
+    do: {:lists.reverse(acc), offset}
 
   defp decode_items(count, bin, offset, ctx, depth, acc) do
     {value, offset} = decode_value(bin, offset, ctx, depth - 1)
-    decode_items(count - 1, bin, offset, ctx, depth, [value | acc])
+
+    decode_items(
+      count - 1,
+      bin,
+      offset,
+      ctx,
+      depth,
+      [value | acc]
+    )
   end
 
   # ── Objects ─────────────────────────────────────────────────────────────────
 
-  defp decode_object(bin, offset, ctx, depth) do
+  defp decode_object(bin, offset, strings, keys, typed_arrays, depth, limits) do
     <<count::32-little>> = take!(bin, offset + 1, 4, "object count")
-    {pairs, offset} = decode_pairs(count, bin, offset + 5, ctx, depth, [])
-    {build_object(pairs, ctx), offset}
+    enforce_limit!(count, limits.max_container_count, bin, offset, :max_container_count)
+
+    {pairs, offset} =
+      decode_pairs(count, bin, offset + 5, {strings, keys, typed_arrays, limits}, depth, [])
+
+    {build_object(pairs, keys), offset}
   end
 
-  defp decode_pairs(0, _bin, offset, _ctx, _depth, acc), do: {:lists.reverse(acc), offset}
+  defp decode_pairs(0, _bin, offset, _ctx, _depth, acc),
+    do: {:lists.reverse(acc), offset}
 
-  defp decode_pairs(count, bin, offset, ctx, depth, acc) do
-    {key, offset} = decode_object_key(bin, offset, ctx)
+  defp decode_pairs(count, bin, offset, {strings, _keys, _typed_arrays, limits} = ctx, depth, acc) do
+    {key, offset} = decode_object_key(bin, offset, strings, limits)
     {value, offset} = decode_value(bin, offset, ctx, depth - 1)
+
     decode_pairs(count - 1, bin, offset, ctx, depth, [{key, value} | acc])
   end
 
-  defp decode_object_key(bin, offset, ctx), do: decode_string_or_ref(bin, offset, ctx)
+  defp decode_object_key(bin, offset, strings, limits),
+    do: decode_string_or_ref(bin, offset, strings, limits)
 
-  defp build_object(pairs, %Ctx{keys: :strings}), do: Map.new(pairs)
+  defp build_object(pairs, :strings), do: Map.new(pairs)
 
-  defp build_object(pairs, %Ctx{keys: keys}) do
+  defp build_object(pairs, keys) do
     Map.new(pairs, fn {name, value} -> {convert_key(name, keys), value} end)
   end
 
@@ -402,8 +494,9 @@ defmodule ToonEx.Btoon.Decode do
 
   # ── Typed arrays ────────────────────────────────────────────────────────────
 
-  defp decode_typed_array(bin, offset, ctx) do
+  defp decode_typed_array(bin, offset, _strings, _keys, typed_arrays, limits) do
     <<type_byte, count::32-little, pad>> = take!(bin, offset + 1, 6, "typed array header")
+    enforce_limit!(count, limits.max_container_count, bin, offset, :max_container_count)
 
     type = ElementType.type_atom_or_nil(type_byte)
 
@@ -420,7 +513,7 @@ defmodule ToonEx.Btoon.Decode do
     data = take!(bin, data_offset, count * elem_size, "typed array data")
 
     value =
-      case ctx.typed_arrays do
+      case typed_arrays do
         :views -> %TypedArray{type: type, data: data}
         :lists -> ElementType.buffer_to_list(type, data)
       end
@@ -430,27 +523,46 @@ defmodule ToonEx.Btoon.Decode do
 
   # ── Object tables ───────────────────────────────────────────────────────────
 
-  defp decode_object_table(bin, offset, ctx) do
+  defp decode_object_table(bin, offset, strings, keys, typed_arrays, limits) do
     <<row_count::32-little, column_count::32-little>> =
       take!(bin, offset + 1, 8, "object table header")
 
-    {columns, offset} = decode_columns(column_count, row_count, bin, offset + 9, ctx, [])
+    enforce_limit!(row_count, limits.max_container_count, bin, offset, :max_container_count)
+    enforce_limit!(column_count, limits.max_container_count, bin, offset, :max_container_count)
+
+    {columns, offset} =
+      decode_columns(
+        column_count,
+        row_count,
+        bin,
+        offset + 9,
+        {strings, keys, typed_arrays, limits},
+        []
+      )
 
     table = %ObjectTable{row_count: row_count, columns: columns}
 
     value =
-      case ctx.typed_arrays do
+      case typed_arrays do
         :views -> table
-        :lists -> object_table_rows(table, ctx)
+        :lists -> object_table_rows(table, strings, keys)
       end
 
     {value, offset}
   end
 
-  defp decode_columns(0, _row_count, _bin, offset, _ctx, acc), do: {:lists.reverse(acc), offset}
+  defp decode_columns(0, _row_count, _bin, offset, _ctx, acc),
+    do: {:lists.reverse(acc), offset}
 
-  defp decode_columns(count, row_count, bin, offset, ctx, acc) do
-    {name, offset} = decode_object_key(bin, offset, ctx)
+  defp decode_columns(
+         count,
+         row_count,
+         bin,
+         offset,
+         {strings, _keys, _typed_arrays, limits} = ctx,
+         acc
+       ) do
+    {name, offset} = decode_object_key(bin, offset, strings, limits)
     <<type_byte, pad>> = take!(bin, offset, 2, "column header")
 
     type = ElementType.type_atom_or_nil(type_byte)
@@ -469,33 +581,76 @@ defmodule ToonEx.Btoon.Decode do
 
     column = %ObjectTable.Column{name: name, type: type, data: data}
 
-    decode_columns(count - 1, row_count, bin, data_offset + row_count * elem_size, ctx, [
-      column | acc
-    ])
+    decode_columns(
+      count - 1,
+      row_count,
+      bin,
+      data_offset + row_count * elem_size,
+      ctx,
+      [
+        column | acc
+      ]
+    )
   end
 
-  defp object_table_rows(%ObjectTable{row_count: row_count, columns: columns}, ctx) do
+  defp object_table_rows(%ObjectTable{row_count: row_count, columns: columns}, _strings, keys) do
     col_names = Enum.map(columns, & &1.name)
 
     values =
       Enum.map(columns, fn %ObjectTable.Column{type: type, data: data} ->
-        ElementType.buffer_to_list(type, data)
+        List.to_tuple(ElementType.buffer_to_list(type, data))
       end)
 
     for i <- 0..(row_count - 1) do
-      Enum.zip(col_names, Enum.map(values, &Enum.at(&1, i)))
-      |> build_object(ctx)
+      row_values = Enum.map(values, &elem(&1, i))
+
+      Enum.zip(col_names, row_values)
+      |> build_object(keys)
     end
   end
 
   # ── Schema mode ─────────────────────────────────────────────────────────────
 
-  defp decode_schema_body(bin, offset, schema, ctx, depth) do
-    <<_schema_id::32-little>> = take!(bin, offset, 4, "schema id")
-    {values, _offset} = decode_schema_fields(bin, offset + 4, schema.fields, ctx, depth, [])
+  defp decode_schema_body(
+         bin,
+         offset,
+         schema,
+         strings,
+         keys,
+         typed_arrays,
+         limits,
+         schema_id_size
+       ) do
+    schema_id =
+      if schema_id_size == 2 do
+        <<id::16-little>> = take!(bin, offset, 2, "schema id")
+        id
+      else
+        <<id::32-little>> = take!(bin, offset, 4, "schema id")
+        id
+      end
+
+    if schema_id != schema.id do
+      raise DecodeError,
+        message: "schema id does not match supplied schema",
+        input: bin,
+        offset: offset,
+        reason: {:schema_id_mismatch, schema_id, schema.id}
+    end
+
+    {values, _offset} =
+      decode_schema_fields(
+        bin,
+        offset + schema_id_size,
+        schema.fields,
+        {strings, keys, typed_arrays, limits},
+        limits.max_depth,
+        []
+      )
+
     names = Enum.map(schema.fields, & &1.name)
 
-    case ctx.keys do
+    case keys do
       :strings ->
         Map.new(Enum.zip(names, values))
 
@@ -504,15 +659,31 @@ defmodule ToonEx.Btoon.Decode do
     end
   end
 
-  defp decode_schema_fields(_bin, offset, [], _ctx, _depth, acc),
-    do: {:lists.reverse(acc), offset}
+  defp decode_schema_fields(
+         _bin,
+         offset,
+         [],
+         _ctx,
+         _depth,
+         acc
+       ),
+       do: {:lists.reverse(acc), offset}
 
-  defp decode_schema_fields(bin, offset, [%{type: type} | rest], ctx, depth, acc) do
-    {value, offset} = decode_schema_field(bin, offset, type, ctx, depth)
+  defp decode_schema_fields(
+         bin,
+         offset,
+         [%{type: type} | rest],
+         {strings, keys, typed_arrays, limits} = ctx,
+         depth,
+         acc
+       ) do
+    {value, offset} =
+      decode_schema_field(bin, offset, type, strings, keys, typed_arrays, limits, depth)
+
     decode_schema_fields(bin, offset, rest, ctx, depth, [value | acc])
   end
 
-  defp decode_schema_field(bin, offset, type, _ctx, _depth)
+  defp decode_schema_field(bin, offset, type, _strings, _keys, _typed_arrays, _limits, _depth)
        when type in [:int8, :uint8, :int16, :uint16, :int32, :uint32, :int64, :uint64] do
     {value, _rest} =
       ElementType.decode_raw(type, take!(bin, offset, ElementType.size(type), "schema field"))
@@ -520,30 +691,33 @@ defmodule ToonEx.Btoon.Decode do
     {value, offset + ElementType.size(type)}
   end
 
-  defp decode_schema_field(bin, offset, type, _ctx, _depth) when type in [:float32, :float64] do
+  defp decode_schema_field(bin, offset, type, _strings, _keys, _typed_arrays, _limits, _depth)
+       when type in [:float32, :float64] do
     {value, _rest} =
       ElementType.decode_raw(type, take!(bin, offset, ElementType.size(type), "schema field"))
 
     {value, offset + ElementType.size(type)}
   end
 
-  defp decode_schema_field(_bin, offset, :null, _ctx, _depth), do: {nil, offset}
+  defp decode_schema_field(_bin, offset, :null, _strings, _keys, _typed_arrays, _limits, _depth),
+    do: {nil, offset}
 
-  defp decode_schema_field(bin, offset, :bool, _ctx, _depth) do
+  defp decode_schema_field(bin, offset, :bool, _strings, _keys, _typed_arrays, _limits, _depth) do
     <<byte>> = take!(bin, offset, 1, "schema bool field")
     {byte != 0, offset + 1}
   end
 
-  defp decode_schema_field(bin, offset, :string, ctx, _depth) do
-    decode_string_or_ref(bin, offset, ctx)
+  defp decode_schema_field(bin, offset, :string, strings, _keys, _typed_arrays, limits, _depth) do
+    decode_string_or_ref(bin, offset, strings, limits)
   end
 
-  defp decode_schema_field(bin, offset, :binary, _ctx, _depth) do
-    decode_binary(bin, offset)
+  defp decode_schema_field(bin, offset, :binary, _strings, _keys, _typed_arrays, limits, _depth) do
+    decode_binary(bin, offset, limits)
   end
 
-  defp decode_schema_field(bin, offset, type, ctx, depth) when type in [:array, :object] do
-    decode_value(bin, offset, ctx, depth - 1)
+  defp decode_schema_field(bin, offset, type, strings, keys, typed_arrays, limits, depth)
+       when type in [:array, :object] do
+    decode_value(bin, offset, {strings, keys, typed_arrays, limits}, depth - 1)
   end
 
   # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -570,6 +744,16 @@ defmodule ToonEx.Btoon.Decode do
         offset: offset,
         reason: :truncated
     end
+  end
+
+  defp enforce_limit!(value, limit, _bin, _offset, _reason) when value <= limit, do: :ok
+
+  defp enforce_limit!(_value, limit, bin, offset, reason) do
+    raise DecodeError,
+      message: "#{reason} exceeded (limit #{limit})",
+      input: bin,
+      offset: offset,
+      reason: reason
   end
 
   defp pad_to(pos, align) when align > 0, do: rem(align - rem(pos, align), align)

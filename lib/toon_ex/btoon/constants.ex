@@ -3,7 +3,7 @@ defmodule ToonEx.Btoon.Constants do
   Binary constants for the BTOON wire format.
 
   BTOON is the binary transport encoding of the TOON data model (see
-  `ToonEx.Btoon`). This module defines the byte-level constants: the envelope
+  `Btoon`). This module defines the byte-level constants: the envelope
   magic/version, flag bits, value type tags and typed-array / schema
   element type selectors.
 
@@ -31,7 +31,9 @@ defmodule ToonEx.Btoon.Constants do
       bit1 (0x02) schema included
       bit2 (0x04) string table present
       bit3 (0x08) session dictionary active
-      bits4-7      reserved
+      bit4 (0x10) no per-message string table
+      bit5 (0x20) schema ID is UInt16
+      bits6-7      reserved
   """
 
   # ── Envelope ────────────────────────────────────────────────────────────────
@@ -45,6 +47,8 @@ defmodule ToonEx.Btoon.Constants do
   @flag_schema 0x02
   @flag_string_table 0x04
   @flag_session_dictionary 0x08
+  @flag_no_string_table 0x10
+  @flag_schema_id_uint16 0x20
 
   @reserved 0x0000
 
@@ -107,6 +111,8 @@ defmodule ToonEx.Btoon.Constants do
             flag_schema: 0,
             flag_string_table: 0,
             flag_session_dictionary: 0,
+            flag_no_string_table: 0,
+            flag_schema_id_uint16: 0,
             reserved: 0,
             tag_null: 0,
             tag_false: 0,
@@ -153,6 +159,8 @@ defmodule ToonEx.Btoon.Constants do
   def flag_schema, do: @flag_schema
   def flag_string_table, do: @flag_string_table
   def flag_session_dictionary, do: @flag_session_dictionary
+  def flag_no_string_table, do: @flag_no_string_table
+  def flag_schema_id_uint16, do: @flag_schema_id_uint16
   def reserved, do: @reserved
 
   def tag_null, do: @tag_null

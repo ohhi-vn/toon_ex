@@ -17,7 +17,7 @@ inputs =
 
 Benchee.run(
   %{
-    "ToonEx.Btoon.decode!" => fn %{btoon: binary} -> ToonEx.Btoon.decode!(binary) end,
+    "Btoon.decode!" => fn %{btoon: binary} -> ToonEx.Btoon.decode!(binary) end,
     "ToonEx.decode!" => fn %{toon: text} -> ToonEx.decode!(text) end,
     "Jason.decode!" => fn %{json: text} -> Jason.decode!(text) end
   },
