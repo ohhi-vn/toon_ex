@@ -213,6 +213,24 @@ defmodule ToonEx.Btoon.Phoenix.SerializerTest do
   end
 
   describe "decode!/2 with binary opcode" do
+    test "decodes BTOON WebSocket frames" do
+      msg =
+        message(
+          topic: "room:1",
+          event: "new_msg",
+          join_ref: "jr",
+          ref: "r1",
+          payload: %{"text" => "hello"}
+        )
+
+      {:socket_push, :binary, data} = Serializer.encode!(msg)
+      decoded = Serializer.decode!(IO.iodata_to_binary(data), opcode: :binary)
+
+      assert decoded.topic == "room:1"
+      assert decoded.event == "new_msg"
+      assert decoded.payload == %{"text" => "hello"}
+    end
+
     test "binary push frame format does not match decode_binary expected layout" do
       msg =
         message(

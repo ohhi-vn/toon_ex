@@ -19,9 +19,9 @@ defmodule ToonEx.Btoon.Phoenix.Serializer do
   ## Text (BTOON) Frames
 
   For map payloads the payload is serialized with `Btoon.encode_to_iodata!/1`
-  (BTOON binary), and `decode!/2` with `opcode: :btoon` decodes it back. As with
-  the TOON serializer, text/binary frames are distinguished by the caller passing
-  the matching `opcode`.
+  (BTOON binary), and `decode!/2` with `opcode: :binary` decodes it back as
+  required by Phoenix WebSockets. The `:btoon` opcode is also accepted for direct
+  use in applications and tests.
 
   Note: This is a workaround to avoid adding a Phoenix library dependency.
   """
@@ -151,6 +151,15 @@ defmodule ToonEx.Btoon.Phoenix.Serializer do
       ref: ref,
       join_ref: join_ref
     }
+  end
+
+  defp decode_binary(
+         <<
+           "BTON",
+           _rest::binary
+         >> = raw_message
+       ) do
+    decode_btoon(raw_message)
   end
 
   defp decode_binary(<<

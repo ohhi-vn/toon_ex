@@ -57,17 +57,25 @@ ToonEx.decode!("tags[2]: a,b")
 ### Phoenix Channels
 
 ```elixir
-# In your endpoint configuration
-config :my_app, MyApp.Endpoint,
+# In your socket declaration (usually endpoint.ex)
+socket "/socket", MyAppWeb.UserSocket,
   websocket: [
     serializer: [{ToonEx.Phoenix.Serializer, "~> 2.0.0"}]
   ]
 ```
 
-Or (if not using Phoenix for LiveView/Restful Apis)
+Do not configure `ToonEx.Btoon` or `ToonEx` as Phoenix's global
+`:json_library` when using the default `Phoenix.Socket.V2.JSONSerializer`.
+That serializer will pass WebSocket text frames to the configured JSON library,
+but BTOON is a binary format and requires its dedicated Phoenix serializer.
+
+For BTOON WebSocket frames, configure the serializer explicitly:
 
 ```elixir
-config :phoenix, :json_library, ToonEx
+socket "/socket", MyAppWeb.UserSocket,
+  websocket: [
+    serializer: [{ToonEx.Btoon.Phoenix.Serializer, "~> 2.0.0"}]
+  ]
 ```
 
 The serializer supports both text and binary frame encoding for Phoenix Channels.

@@ -469,160 +469,166 @@ defmodule ToonEx.Decode.StructuralParser do
 
   # Parse a single entry line
   defp parse_entry_line(%{content: content} = line_info, rest, base_indent, opts, metadata) do
-    # Track if key was quoted by checking if line starts with quote
     was_quoted = key_was_quoted?(content)
 
     case Parser.parse_line(content) do
       {:ok, [result], "", _, _, _} ->
-        case result do
-          {key, value} when is_list(value) ->
-            updated_meta = add_key_to_metadata(key, was_quoted, metadata)
-
-            # Check if this is an empty array with nested content (list or tabular format)
-            # Pattern like items[3]: with indented lines following
-            if value == [] and peek_next_indent(rest) > base_indent do
-              # This is a list/tabular array header, not an inline array
-              # Fall through to special line handling
-              case handle_special_line(line_info, rest, base_indent, opts, updated_meta) do
-                {:skip, _, updated_meta2} ->
-                  # If special line handling doesn't work, treat as empty array
-                  {:entry, key, [], rest, updated_meta2}
-
-                result ->
-                  result
-              end
-            else
-              # Inline array - ALWAYS re-parse to respect leading zeros and other edge cases
-              # The Parser module may have already parsed numbers incorrectly
-              # Extract array marker from content to get delimiter
-              corrected_value =
-                case Regex.run(@array_header_with_colon_regex, content) do
-                  [_, array_marker, length_str] ->
-                    declared_length = String.to_integer(length_str)
-                    delimiter = extract_delimiter(array_marker)
-                    # Re-parse the values with correct delimiter
-                    case String.split(content, ": ", parts: 2) do
-                      [_, values_str] ->
-                        values = parse_delimited_values(values_str, delimiter)
-
-                        # Validate length (strict mode only per TOON spec Section 14.1)
-                        if Map.get(opts, :strict, true) && length(values) != declared_length do
-                          raise DecodeError,
-                            message:
-                              "Array length mismatch: declared #{declared_length}, got #{length(values)}",
-                            input: content
-                        end
-
-                        values
-
-                      _ ->
-                        value
-                    end
-
-                  _ ->
-                    value
-                end
-
-              {:entry, key, corrected_value, rest, updated_meta}
-            end
-
-          {key, value} ->
-            updated_meta = add_key_to_metadata(key, was_quoted, metadata)
-
-            # Check if value is a primitive (not a container that can have nested content)
-            # Primitives: string, number, boolean, nil, atom
-            # Containers: map, list
-            is_primitive = not (is_map(value) or is_list(value))
-
-            case peek_next_indent(rest) do
-              indent when indent > base_indent ->
-                if is_primitive and opts.strict do
-                  # Primitive value cannot have nested content - over-indented line
-                  raise DecodeError,
-                    message:
-                      "Over-indented line after primitive field: primitive fields cannot have nested content",
-                    input: Enum.at(rest, 0).original
-                else
-                  {nested_value, nested_meta} =
-                    parse_nested_value(key, rest, base_indent, opts, updated_meta)
-
-                  {remaining_lines, _} = skip_nested_lines(rest, base_indent)
-
-                  {:entry, key, nested_value, remaining_lines, nested_meta}
-                end
-
-              _ ->
-                # FIX 1: When the raw value string is empty (e.g. "key: "), preserve
-                # the Parser's result (%{} from empty_kv) instead of calling
-                # parse_value(""), which would incorrectly return "".
-                corrected_value =
-                  case String.split(content, ": ", parts: 2) do
-                    [_, value_str] ->
-                      trimmed_str = String.trim(value_str)
-                      if trimmed_str == "", do: value, else: parse_value(trimmed_str)
-
-                    _ ->
-                      value
-                  end
-
-                {:entry, key, corrected_value, rest, updated_meta}
-            end
-        end
+        handle_complete_entry(
+          result,
+          content,
+          line_info,
+          rest,
+          base_indent,
+          opts,
+          metadata,
+          was_quoted
+        )
 
       {:ok, [parsed_result], rest_content, _, _, _} when rest_content != "" ->
-        case parsed_result do
-          {key, _partial_value} ->
-            updated_meta = add_key_to_metadata(key, was_quoted, metadata)
-
-            case String.split(content, ": ", parts: 2) do
-              [array_header, values_str] ->
-                # Re-parse as array if header contains [N]
-                case Regex.run(@array_header_with_values_regex, array_header) do
-                  [_, length_str, delimiter_marker] ->
-                    declared_length = String.to_integer(length_str)
-                    delimiter = extract_delimiter("[#{delimiter_marker}]")
-                    values = parse_delimited_values(values_str, delimiter)
-
-                    # Validate length (strict mode only per TOON spec Section 14.1)
-                    if Map.get(opts, :strict, true) && length(values) != declared_length do
-                      raise DecodeError,
-                        message:
-                          "Array length mismatch: declared #{declared_length}, got #{length(values)}",
-                        input: content
-                    end
-
-                    {:entry, key, values, rest, updated_meta}
-
-                  nil ->
-                    # Not an array line — original scalar fallback
-                    full_value = parse_value(String.trim(values_str))
-                    {:entry, key, full_value, rest, updated_meta}
-                end
-
-              _ ->
-                {:skip, rest, metadata}
-            end
-
-          _ ->
-            {:skip, rest, metadata}
-        end
+        context = %{content: content, rest: rest, metadata: metadata, was_quoted: was_quoted}
+        handle_partial_entry(parsed_result, rest_content, context, opts)
 
       {:ok, _, _, _, _, _} ->
-        # Unexpected parse result
         {:skip, rest, metadata}
 
       {:error, reason, _, _, _, _} ->
-        # Try to handle special cases like array headers
-        # If it still fails, raise an error
-        case handle_special_line(line_info, rest, base_indent, opts, metadata) do
-          {:skip, _, _meta} ->
-            raise DecodeError,
-              message: "Failed to parse line: #{reason}",
-              input: content
+        handle_parse_failure(reason, line_info, rest, base_indent, opts, metadata)
+    end
+  end
 
-          result ->
-            result
+  defp handle_complete_entry(
+         {key, value},
+         content,
+         line_info,
+         rest,
+         base_indent,
+         opts,
+         metadata,
+         was_quoted
+       )
+       when is_list(value) do
+    updated_meta = add_key_to_metadata(key, was_quoted, metadata)
+
+    if value == [] and peek_next_indent(rest) > base_indent do
+      case handle_special_line(line_info, rest, base_indent, opts, updated_meta) do
+        {:skip, _, updated_meta} -> {:entry, key, [], rest, updated_meta}
+        result -> result
+      end
+    else
+      {:entry, key, reparse_inline_array(content, value, opts), rest, updated_meta}
+    end
+  end
+
+  defp handle_complete_entry(
+         {key, value},
+         content,
+         _line_info,
+         rest,
+         base_indent,
+         opts,
+         metadata,
+         was_quoted
+       ) do
+    updated_meta = add_key_to_metadata(key, was_quoted, metadata)
+
+    case peek_next_indent(rest) do
+      indent when indent > base_indent ->
+        handle_nested_entry(key, value, rest, base_indent, opts, updated_meta)
+
+      _ ->
+        {:entry, key, reparse_scalar(content, value), rest, updated_meta}
+    end
+  end
+
+  defp handle_nested_entry(key, value, rest, base_indent, opts, metadata)
+       when is_map(value) or is_list(value) or not opts.strict do
+    {nested_value, nested_meta} = parse_nested_value(key, rest, base_indent, opts, metadata)
+    {remaining_lines, _} = skip_nested_lines(rest, base_indent)
+    {:entry, key, nested_value, remaining_lines, nested_meta}
+  end
+
+  defp handle_nested_entry(_key, _value, [line | _], _base_indent, _opts, _metadata) do
+    raise DecodeError,
+      message:
+        "Over-indented line after primitive field: primitive fields cannot have nested content",
+      input: line.original
+  end
+
+  defp reparse_inline_array(content, value, opts) do
+    case Regex.run(@array_header_with_colon_regex, content) do
+      [_, array_marker, length_str] ->
+        declared_length = String.to_integer(length_str)
+        delimiter = extract_delimiter(array_marker)
+
+        case String.split(content, ": ", parts: 2) do
+          [_, values_str] ->
+            values = parse_delimited_values(values_str, delimiter)
+            validate_array_length(values, declared_length, content, opts)
+            values
+
+          _ ->
+            value
         end
+
+      _ ->
+        value
+    end
+  end
+
+  defp reparse_scalar(content, value) do
+    case String.split(content, ": ", parts: 2) do
+      [_, value_str] ->
+        case String.trim(value_str) do
+          "" -> value
+          trimmed -> parse_value(trimmed)
+        end
+
+      _ ->
+        value
+    end
+  end
+
+  defp handle_partial_entry({key, _partial_value}, _remaining_input, context, opts) do
+    %{content: content, rest: rest, metadata: metadata, was_quoted: was_quoted} = context
+    updated_meta = add_key_to_metadata(key, was_quoted, metadata)
+
+    case String.split(content, ": ", parts: 2) do
+      [array_header, values_str] ->
+        case Regex.run(@array_header_with_values_regex, array_header) do
+          [_, length_str, delimiter_marker] ->
+            declared_length = String.to_integer(length_str)
+            delimiter = extract_delimiter("[#{delimiter_marker}]")
+            values = parse_delimited_values(values_str, delimiter)
+            validate_array_length(values, declared_length, content, opts)
+            {:entry, key, values, rest, updated_meta}
+
+          nil ->
+            {:entry, key, parse_value(String.trim(values_str)), rest, updated_meta}
+        end
+
+      _ ->
+        {:skip, rest, metadata}
+    end
+  end
+
+  defp handle_partial_entry(_result, _remaining_input, %{rest: rest, metadata: metadata}, _opts),
+    do: {:skip, rest, metadata}
+
+  defp handle_parse_failure(reason, line_info, rest, base_indent, opts, metadata) do
+    case handle_special_line(line_info, rest, base_indent, opts, metadata) do
+      {:skip, _, _meta} ->
+        raise DecodeError, message: "Failed to parse line: #{reason}", input: line_info.content
+
+      result ->
+        result
+    end
+  end
+
+  defp validate_array_length(values, declared_length, content, opts) do
+    if Map.get(opts, :strict, true) and length(values) != declared_length do
+      raise DecodeError,
+        message: "Array length mismatch: declared #{declared_length}, got #{length(values)}",
+        input: content
     end
   end
 
@@ -1040,34 +1046,32 @@ defmodule ToonEx.Decode.StructuralParser do
 
       {:ok, [{key, partial_value}], remaining_input, _, _, _}
       when is_binary(remaining_input) and remaining_input != "" ->
-        handle_partial_parse(
-          key,
-          partial_value,
-          remaining_input,
-          delimiter,
-          trimmed,
-          rest,
-          line,
-          expected_indent,
-          opts
-        )
+        context = %{
+          delimiter: delimiter,
+          trimmed: trimmed,
+          rest: rest,
+          line: line,
+          expected_indent: expected_indent,
+          opts: opts
+        }
+
+        handle_partial_parse(key, partial_value, remaining_input, context)
 
       {:error, _, _, _, _, _} ->
         handle_parse_error(trimmed, rest, expected_indent, opts)
     end
   end
 
-  defp handle_partial_parse(
-         key,
-         partial_value,
-         remaining_input,
-         delimiter,
-         trimmed,
-         rest,
-         line,
-         expected_indent,
-         opts
-       ) do
+  defp handle_partial_parse(key, partial_value, remaining_input, context) do
+    %{
+      delimiter: delimiter,
+      trimmed: trimmed,
+      rest: rest,
+      line: line,
+      expected_indent: expected_indent,
+      opts: opts
+    } = context
+
     if delimiter != "," and String.starts_with?(remaining_input, ",") do
       full_value = parse_value(to_string(partial_value) <> remaining_input)
 
