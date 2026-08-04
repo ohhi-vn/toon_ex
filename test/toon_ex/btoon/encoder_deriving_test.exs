@@ -2,7 +2,7 @@ defmodule ToonEx.Btoon.EncoderDerivingTest do
   use ExUnit.Case, async: true
 
   alias ToonEx.Btoon
-  alias ToonEx.BtoonFixtures.{DerivedAll, DerivedExcept, DerivedUser}
+  alias ToonEx.BtoonFixtures.{ComplexStruct, DerivedAll, DerivedExcept, DerivedUser}
 
   describe "derived BTOON encoders" do
     test "only: encodes selected fields" do
@@ -36,6 +36,29 @@ defmodule ToonEx.Btoon.EncoderDerivingTest do
       assert Btoon.decode!(Btoon.encode!(data)) == %{
                "user" => %{"name" => "Alice", "email" => "a@example.com"},
                "role" => "admin"
+             }
+    end
+
+    test "encodes a complex struct with nested structs and collections" do
+      owner = %DerivedUser{name: "Alice", email: "a@example.com"}
+      members = [%DerivedAll{a: 1, b: "one"}, %DerivedAll{a: 2, b: "two"}]
+
+      value = %ComplexStruct{
+        id: 42,
+        owner: owner,
+        members: members,
+        metadata: %{"region" => "eu-west", "retries" => 3},
+        active: true,
+        created_at: ~U[2026-01-02 03:04:05Z]
+      }
+
+      assert Btoon.decode!(Btoon.encode!(value)) == %{
+               "id" => 42,
+               "owner" => %{"name" => "Alice", "email" => "a@example.com"},
+               "members" => [%{"a" => 1, "b" => "one"}, %{"a" => 2, "b" => "two"}],
+               "metadata" => %{"region" => "eu-west", "retries" => 3},
+               "active" => true,
+               "created_at" => "2026-01-02T03:04:05Z"
              }
     end
   end

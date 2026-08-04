@@ -7,7 +7,7 @@ defmodule ToonEx.Btoon.ImplHelperTest do
     test "macro generates defimpl when expanded" do
       expanded =
         quote do
-          Btoon.ToonImplHelper.gen_impl(BtoonFixtures.ImplHelperUser)
+          Btoon.ImplHelper.gen_impl(BtoonFixtures.ImplHelperUser)
         end
         |> Macro.expand(__ENV__)
 
@@ -16,13 +16,13 @@ defmodule ToonEx.Btoon.ImplHelperTest do
     end
   end
 
-  describe "Btoon.ToonImplHelper module" do
+  describe "Btoon.ImplHelper module" do
     test "module exists and is loadable" do
-      assert Code.ensure_loaded?(Btoon.ToonImplHelper)
+      assert Code.ensure_loaded?(Btoon.ImplHelper)
     end
 
     test "module has gen_impl and __using__ macros" do
-      macros = Btoon.ToonImplHelper.__info__(:macros)
+      macros = Btoon.ImplHelper.__info__(:macros)
       macro_names = Enum.map(macros, fn {name, _arity} -> name end)
 
       assert :gen_impl in macro_names
@@ -33,7 +33,7 @@ defmodule ToonEx.Btoon.ImplHelperTest do
       expanded =
         quote do
           defmodule TestBtoonModuleUsingHelper do
-            use Btoon.ToonImplHelper, impl: [BtoonFixtures.ImplHelperUser]
+            use Btoon.ImplHelper, impl: [BtoonFixtures.ImplHelperUser]
           end
         end
         |> Macro.expand(__ENV__)

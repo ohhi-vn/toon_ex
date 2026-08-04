@@ -272,6 +272,28 @@ defmodule ToonEx.Btoon.EdgeCasesTest do
       assert Btoon.decode!(Btoon.encode!(data)) == data
     end
 
+    test "array of atom-keyed numeric maps uses string object-table columns" do
+      data = [
+        %{timestamp: 1_785_850_345_626, ele: 3.9, lat: 10.7374115, lon: 106.7081107},
+        %{timestamp: 1_785_850_357_781, ele: 4.3, lat: 10.7374157, lon: 106.7081102}
+      ]
+
+      assert Btoon.decode!(Btoon.encode!(data)) == [
+               %{
+                 "timestamp" => 1_785_850_345_626,
+                 "ele" => 3.9,
+                 "lat" => 10.7374115,
+                 "lon" => 106.7081107
+               },
+               %{
+                 "timestamp" => 1_785_850_357_781,
+                 "ele" => 4.3,
+                 "lat" => 10.7374157,
+                 "lon" => 106.7081102
+               }
+             ]
+    end
+
     test "map with special characters in string values" do
       data = %{"key" => "value with: colon and, comma"}
       assert Btoon.decode!(Btoon.encode!(data)) == data

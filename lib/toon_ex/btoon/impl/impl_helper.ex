@@ -1,10 +1,10 @@
-defmodule ToonEx.Btoon.ToonImplHelper do
+defmodule ToonEx.Btoon.ImplHelper do
   @moduledoc """
   Helper macro for generating ToonEx.Btoon.Encoder protocol implementations.
 
   Allows modules to easily implement the ToonEx.Btoon.Encoder protocol by
   providing a list of modules that have an `encode!` function. Mirrors
-  `ToonEx.ToonImplHelper` for the TOON text encoder, but targets the BTOON
+  `ToonEx.Btoon.ImplHelper` for the TOON text encoder, but targets the BTOON
   binary `ToonEx.Btoon.Encoder` protocol instead.
 
   ## Usage
@@ -14,24 +14,22 @@ defmodule ToonEx.Btoon.ToonImplHelper do
   as a map with string keys):
 
   ```Elixir
-  use Btoon.ToonImplHelper, impl: [AModule1, AModule2, ...]
+  use ToonEx.Btoon.ImplHelper, impl: [AModule1, AModule2, ...]
   ```
 
   or directly:
 
   ```Elixir
-  Btoon.ToonImplHelper.gen_impl AModule
+  ToonEx.Btoon.ImplHelper.gen_impl AModule
   ```
   """
-
-  alias Btoon
 
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts] do
       list_module = Keyword.get(opts, :modules, Keyword.get(opts, :impl, []))
 
       for mod <- list_module do
-        Btoon.ToonImplHelper.gen_impl(mod)
+        ToonEx.Btoon.ImplHelper.gen_impl(mod)
       end
     end
   end

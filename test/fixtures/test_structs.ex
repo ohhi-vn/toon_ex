@@ -56,6 +56,12 @@ defmodule ToonEx.BtoonFixtures.DerivedAll do
   defstruct [:a, :b]
 end
 
+defmodule ToonEx.BtoonFixtures.ComplexStruct do
+  @moduledoc false
+  @derive ToonEx.Btoon.Encoder
+  defstruct [:id, :owner, :members, :metadata, :active, :created_at]
+end
+
 defmodule ToonEx.BtoonFixtures.ImplHelperUser do
   @moduledoc false
   defstruct [:name, :value]

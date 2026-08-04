@@ -449,7 +449,9 @@ defmodule ToonEx.Btoon.Encode do
 
   defp encode_list_fallback(list, offset, ctx) do
     if ctx.object_tables do
-      case ElementType.detect_object_table(list) do
+      object_table_rows = stringify_object_table_keys(list)
+
+      case ElementType.detect_object_table(object_table_rows) do
         {:ok, names, types, columns_data} ->
           columns =
             Enum.zip([names, types, columns_data])
@@ -472,6 +474,16 @@ defmodule ToonEx.Btoon.Encode do
       end
     else
       encode_array_general(list, offset, ctx)
+    end
+  end
+
+  defp stringify_object_table_keys(list) do
+    if Enum.all?(list, &(is_map(&1) and not is_struct(&1))) do
+      Enum.map(list, fn row ->
+        Map.new(row, fn {key, value} -> {to_string(key), value} end)
+      end)
+    else
+      list
     end
   end
 
