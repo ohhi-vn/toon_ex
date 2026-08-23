@@ -34,6 +34,11 @@ defmodule ToonEx.Encode.Primitives do
     {1.0e8, 1}
   ]
 
+  # Maximum finite IEEE 754 double-precision float. Values beyond this are
+  # infinity; the value itself and anything smaller is finite.
+  # credo:disable-for-next-line Credo.Check.Readability.LargeNumbers
+  @max_float64 1.7976931348623157e308
+
   @doc """
   Encodes a primitive value to TOON format.
 
@@ -90,7 +95,7 @@ defmodule ToonEx.Encode.Primitives do
       value != value ->
         Constants.null_literal()
 
-      value > 1.0e308 or value < -1.0e308 ->
+      value > @max_float64 or value < -@max_float64 ->
         Constants.null_literal()
 
       # Whole-number float — encode without decimal point per TOON spec

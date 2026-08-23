@@ -213,10 +213,17 @@ defmodule ToonEx.Btoon.SchemaCompiler do
   defp compile_field_encoder(:binary) do
     fn value, ctx ->
       data =
-        if Map.has_key?(value, :__struct__) and value.__struct__ == Binary do
-          value.data
-        else
-          value
+        cond do
+          is_map(value) and Map.has_key?(value, :__struct__) and value.__struct__ == Binary ->
+            value.data
+
+          is_binary(value) ->
+            value
+
+          true ->
+            raise EncodeError,
+              message: "binary schema field requires a binary or Binary struct",
+              value: value
         end
 
       {iodata, size} = encode_binary(data)

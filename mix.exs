@@ -1,7 +1,7 @@
 defmodule ToonEx.MixProject do
   use Mix.Project
 
-  @version "1.3.1"
+  @version "1.4.0"
   @source_url "https://github.com/ohhi-vn/toon_ex"
 
   def project do
@@ -56,9 +56,6 @@ defmodule ToonEx.MixProject do
 
   defp deps do
     [
-      # Core dependencies
-      {:nimble_parsec, "~> 1.4"},
-
       # Development dependencies
       {:ex_doc, "~> 0.40", only: :dev, runtime: false},
       {:benchee, "~> 1.5", only: :dev, runtime: false},

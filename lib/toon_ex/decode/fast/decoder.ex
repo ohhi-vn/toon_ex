@@ -106,11 +106,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # ── Main Decode Logic ───────────────────────────────────────────────────────
 
   defp do_decode(input, opts) do
-    lines = preprocess(input)
-
-    if opts.strict do
-      validate_indentation(lines, opts)
-    end
+    lines = preprocess(input, opts)
 
     track? = opts.expand_paths == :safe
 
@@ -139,15 +135,22 @@ defmodule ToonEx.Decode.Fast.Decoder do
   # ── Preprocessing ───────────────────────────────────────────────────────────
 
   # Split input into lines, compute indent, detect blanks, strip comments.
-  # Returns list of {content, indent, is_blank} tuples (3-tuple, not map).
+  # Strict-mode indentation validation is fused into this pass (indent/tab
+  # info is already computed here), avoiding a second traversal of all lines.
+  # Returns list of {content, indent, is_blank, has_tab} tuples.
   # Uses :binary.split/3 (BIF) for line splitting – faster than String.split/2.
-  defp preprocess(input) do
+  defp preprocess(input, opts) do
+    strict? = opts.strict
+    indent_size = opts.indent_size
+
     input
     |> strip_bom()
     |> :binary.split("\n", [:global])
     |> Enum.map(&strip_trailing_cr/1)
-    |> do_preprocess([])
-    |> drop_trailing_blank()
+    |> do_preprocess([], strict?, indent_size)
+    # acc is in reverse document order: its head is the document tail
+    |> drop_trailing_blank_acc()
+    |> :lists.reverse()
   end
 
   defp strip_bom(<<0xEF, 0xBB, 0xBF, rest::binary>>), do: rest
@@ -165,54 +168,56 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp do_preprocess([], acc), do: :lists.reverse(acc)
+  defp do_preprocess([], acc, _strict?, _indent_size), do: acc
 
-  defp do_preprocess([line | rest], acc) do
+  defp do_preprocess([line | rest], acc, strict?, indent_size) do
     {trimmed, indent, has_tab} = count_leading_spaces(line, 0, false)
 
     if comment_line?(trimmed) and not has_tab do
       # Comment line — skip entirely (first non-whitespace char is #)
       # But only if the leading whitespace contains no tabs (per spec §5.1)
-      do_preprocess(rest, acc)
+      do_preprocess(rest, acc, strict?, indent_size)
     else
       is_blank = trimmed == <<>> or whitespace_only?(trimmed)
-      do_preprocess(rest, [{trimmed, indent, is_blank, has_tab} | acc])
+
+      if strict? and not is_blank do
+        validate_line_indentation!(indent, has_tab, indent_size)
+      end
+
+      do_preprocess(rest, [{trimmed, indent, is_blank, has_tab} | acc], strict?, indent_size)
     end
   end
 
-  defp drop_trailing_blank(lines) do
-    lines
-    |> Enum.reverse()
-    |> Enum.drop_while(fn {_, _, is_blank, _} -> is_blank end)
-    |> Enum.reverse()
+  # Strict-mode indentation checks, evaluated per line during preprocessing.
+  defp validate_line_indentation!(indent, has_tab, indent_size) do
+    if has_tab do
+      raise DecodeError,
+        message: "Tab characters are not allowed in indentation (strict mode)"
+    end
+
+    if indent > 0 and rem(indent, indent_size) != 0 do
+      raise DecodeError,
+        message: "Indentation must be a multiple of #{indent_size} spaces (strict mode)"
+    end
   end
+
+  # acc holds lines in reverse document order, so its leading entries are the
+  # document's trailing blanks. Drop them, then reverse once.
+  defp drop_trailing_blank_acc([{_, _, true, _} | rest]), do: drop_trailing_blank_acc(rest)
+  defp drop_trailing_blank_acc(acc), do: acc
 
   # ── Blank validation ────────────────────────────────────────────────────────
 
-  # ── Indentation Validation ──────────────────────────────────────────────────
-
-  defp validate_indentation(lines, opts) do
-    indent_size = opts.indent_size
-
-    :lists.foreach(
-      fn {_, indent, is_blank, has_tab} ->
-        unless is_blank do
-          if has_tab do
-            raise DecodeError,
-              message: "Tab characters are not allowed in indentation (strict mode)"
-          end
-
-          if indent > 0 and rem(indent, indent_size) != 0 do
-            raise DecodeError,
-              message: "Indentation must be a multiple of #{indent_size} spaces (strict mode)"
-          end
-        end
-      end,
-      lines
-    )
-  end
-
   # ── Root Form Detection ─────────────────────────────────────────────────────
+
+  # Skip leading blank lines so a document may start with blank lines
+  # (mirrors drop_trailing_blank for trailing blanks).
+  defp parse_root([{_, _, true, _} | rest], opts, track?) do
+    case rest do
+      [] -> {%{}, []}
+      _ -> parse_root(rest, opts, track?)
+    end
+  end
 
   defp parse_root([{content, _, _, _} | _] = lines, opts, track?) do
     cond do
@@ -224,7 +229,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
       # Per TOON spec §5: a single line that is neither a valid array header nor
       # a key-value line decodes to a single primitive.
       # Quoted strings like "a:b" are primitives even with colons inside.
-      length(lines) == 1 and root_primitive?(content) ->
+      match?([_], lines) and root_primitive?(content) ->
         {parse_value(content), []}
 
       # Object (default)
@@ -841,11 +846,12 @@ defmodule ToonEx.Decode.Fast.Decoder do
 
   defp parse_entry_into_object(entry_rows, fields, delimiter, opts) do
     leaf_fc = leaf_count(fields)
-    parse_entry_rows(entry_rows, fields, leaf_fc, delimiter, opts, [])
+    entries = parse_entry_rows(entry_rows, fields, leaf_fc, delimiter, opts, [])
+    check_entry_key_duplicates(entries, opts)
+    :maps.from_list(entries)
   end
 
-  defp parse_entry_rows([], _fields, _fc, _delim, _opts, acc),
-    do: :maps.from_list(:lists.reverse(acc))
+  defp parse_entry_rows([], _fields, _fc, _delim, _opts, acc), do: :lists.reverse(acc)
 
   defp parse_entry_rows([{content, _, false, _} | rest], fields, fc, delim, opts, acc) do
     case find_colon_space(content) do
@@ -858,12 +864,6 @@ defmodule ToonEx.Decode.Fast.Decoder do
         if length(cell_values) != fc do
           raise DecodeError,
             message: "Entry row cell count mismatch: expected #{fc}, got #{length(cell_values)}",
-            input: content
-        end
-
-        if opts.strict and List.keymember?(acc, entry_key, 0) do
-          raise DecodeError,
-            message: "Duplicate entry key in strict mode: #{inspect(entry_key)}",
             input: content
         end
 
@@ -882,8 +882,29 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  defp parse_entry_rows([{_, _, true} | rest], fields, fc, delim, opts, acc) do
-    parse_entry_rows(rest, fields, fc, delim, opts, acc)
+  # Strict-mode duplicate entry keys are detected once after parsing — O(n) —
+  # instead of scanning the accumulator for every row, which was O(n²).
+  defp check_entry_key_duplicates(_entries, %{strict: false}), do: :ok
+
+  defp check_entry_key_duplicates(entries, _opts) do
+    map = :maps.from_list(entries)
+
+    if map_size(map) != length(entries) do
+      {dup_key, _} = find_duplicate_entry_key(entries, %{})
+
+      raise DecodeError,
+        message: "Duplicate entry key in strict mode: #{inspect(dup_key)}"
+    end
+
+    :ok
+  end
+
+  defp find_duplicate_entry_key([{key, _} | rest], seen) do
+    if Map.has_key?(seen, key) do
+      {key, nil}
+    else
+      find_duplicate_entry_key(rest, Map.put(seen, key, true))
+    end
   end
 
   # Split an entry row at the first unquoted colon-space.
@@ -2010,8 +2031,11 @@ defmodule ToonEx.Decode.Fast.Decoder do
     actual_delimiter = detect_delimiter(str, delimiter)
 
     if contains_byte(str, ?") do
-      # Slow path: quotes present – use quote-aware splitting
-      do_split_and_parse(str, actual_delimiter, [], false, [])
+      # Slow path: quotes present – use quote-aware splitting.
+      # Chunk-based: safe runs are referenced via binary_part/3 (O(1)
+      # sub-binaries) instead of allocating one fresh 1-byte binary per
+      # character.
+      do_split_and_parse(str, actual_delimiter)
     else
       # Fast path: no quotes – use :binary.split (BIF) then list comprehension.
       # List comprehension compiles to a tighter loop than Enum.map because
@@ -2022,40 +2046,60 @@ defmodule ToonEx.Decode.Fast.Decoder do
     end
   end
 
-  # Quote-aware split and parse
-  defp do_split_and_parse("", _delimiter, current, _in_quote, acc) do
-    current_str =
-      current
-      |> :lists.reverse()
-      |> IO.iodata_to_binary()
-      |> trim_leading()
-      |> trim_trailing()
-
-    :lists.reverse([parse_value(current_str) | acc])
+  # Quote-aware split and parse (slow path – quotes present).
+  # State: {delimiter, delim_byte, original, chunk_start, chunk_len,
+  #         in_quote, current_segment_pieces (reversed), acc (reversed parts)}.
+  # Invariant: the head of `rest` sits at offset chunk_start + chunk_len in
+  # the original string.
+  defp do_split_and_parse(str, delimiter) do
+    str
+    |> do_split_loop(:binary.first(delimiter), str, 0, 0, false, [], [])
+    |> :lists.reverse()
   end
 
-  defp do_split_and_parse(<<"\\", char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, [<<char>>, "\\" | current], in_quote, acc)
+  defp do_split_loop(<<>>, _db, orig, cs, cl, _iq, cur, acc) do
+    [parse_value(finish_segment(orig, cs, cl, cur)) | acc]
   end
 
-  defp do_split_and_parse(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, ["\"" | current], not in_quote, acc)
+  # Escape pair — kept literally; reference both bytes in one piece
+  defp do_split_loop(<<?\\, _char, rest::binary>>, db, orig, cs, cl, iq, cur, acc) do
+    cur = [binary_part(orig, cs + cl, 2) | flush_seg_chunk(cur, orig, cs, cl)]
+    do_split_loop(rest, db, orig, cs + cl + 2, 0, iq, cur, acc)
   end
 
-  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, false, acc)
-       when <<char>> == delimiter do
-    current_str =
-      current
-      |> :lists.reverse()
-      |> IO.iodata_to_binary()
-      |> trim_leading()
-      |> trim_trailing()
+  # Quote toggles quoting and is itself literal content — extends the chunk
+  defp do_split_loop(<<?", rest::binary>>, db, orig, cs, cl, iq, cur, acc),
+    do: do_split_loop(rest, db, orig, cs, cl + 1, not iq, cur, acc)
 
-    do_split_and_parse(rest, delimiter, [], false, [parse_value(current_str) | acc])
+  # Unquoted delimiter ends the segment
+  defp do_split_loop(<<char, rest::binary>>, db, orig, cs, cl, false, cur, acc)
+       when char == db do
+    part = parse_value(finish_segment(orig, cs, cl, cur))
+    do_split_loop(rest, db, orig, cs + cl + 1, 0, false, [], [part | acc])
   end
 
-  defp do_split_and_parse(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse(rest, delimiter, [<<char>> | current], in_quote, acc)
+  defp do_split_loop(<<_char, rest::binary>>, db, orig, cs, cl, iq, cur, acc),
+    do: do_split_loop(rest, db, orig, cs, cl + 1, iq, cur, acc)
+
+  @compile {:inline, finish_segment: 4, flush_seg_chunk: 4}
+  defp flush_seg_chunk([], _orig, _cs, 0), do: []
+  defp flush_seg_chunk(cur_rev, orig, cs, cl), do: [binary_part(orig, cs, cl) | cur_rev]
+
+  defp finish_segment(orig, cs, cl, cur_rev) do
+    case cur_rev do
+      [] when cl == 0 ->
+        <<>>
+
+      [] ->
+        binary_part(orig, cs, cl)
+
+      _ ->
+        [binary_part(orig, cs, cl) | cur_rev]
+        |> :lists.reverse()
+        |> IO.iodata_to_binary()
+    end
+    |> trim_leading()
+    |> trim_trailing()
   end
 
   # Split and parse cell values for tabular entries.
@@ -2065,7 +2109,7 @@ defmodule ToonEx.Decode.Fast.Decoder do
     actual_delimiter = detect_delimiter(str, delimiter)
 
     if contains_byte(str, ?") do
-      do_split_and_parse_cells(str, actual_delimiter, [], false, [])
+      do_split_and_parse_cells(str, actual_delimiter)
     else
       parts = :binary.split(str, actual_delimiter, [:global])
       for part <- parts, do: parse_cell_value(part)
@@ -2075,40 +2119,34 @@ defmodule ToonEx.Decode.Fast.Decoder do
   defp parse_cell_value("[]"), do: "[]"
   defp parse_cell_value(str), do: parse_value(str)
 
-  defp do_split_and_parse_cells("", _delimiter, current, _in_quote, acc) do
-    current_str =
-      current
-      |> :lists.reverse()
-      |> IO.iodata_to_binary()
-      |> trim_leading()
-      |> trim_trailing()
-
-    :lists.reverse([parse_cell_value(current_str) | acc])
+  # Same chunk-based loop as do_split_and_parse but yields cell values
+  # (the `[]` token stays a literal string per spec §9.5).
+  defp do_split_and_parse_cells(str, delimiter) do
+    str
+    |> do_split_cells_loop(:binary.first(delimiter), str, 0, 0, false, [], [])
+    |> :lists.reverse()
   end
 
-  defp do_split_and_parse_cells(<<"\\", char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse_cells(rest, delimiter, [<<char>>, "\\" | current], in_quote, acc)
+  defp do_split_cells_loop(<<>>, _db, orig, cs, cl, _iq, cur, acc) do
+    [parse_cell_value(finish_segment(orig, cs, cl, cur)) | acc]
   end
 
-  defp do_split_and_parse_cells(<<"\"", rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse_cells(rest, delimiter, ["\"" | current], not in_quote, acc)
+  defp do_split_cells_loop(<<?\\, _char, rest::binary>>, db, orig, cs, cl, iq, cur, acc) do
+    cur = [binary_part(orig, cs + cl, 2) | flush_seg_chunk(cur, orig, cs, cl)]
+    do_split_cells_loop(rest, db, orig, cs + cl + 2, 0, iq, cur, acc)
   end
 
-  defp do_split_and_parse_cells(<<char, rest::binary>>, delimiter, current, false, acc)
-       when <<char>> == delimiter do
-    current_str =
-      current
-      |> :lists.reverse()
-      |> IO.iodata_to_binary()
-      |> trim_leading()
-      |> trim_trailing()
+  defp do_split_cells_loop(<<?", rest::binary>>, db, orig, cs, cl, iq, cur, acc),
+    do: do_split_cells_loop(rest, db, orig, cs, cl + 1, not iq, cur, acc)
 
-    do_split_and_parse_cells(rest, delimiter, [], false, [parse_cell_value(current_str) | acc])
+  defp do_split_cells_loop(<<char, rest::binary>>, db, orig, cs, cl, false, cur, acc)
+       when char == db do
+    part = parse_cell_value(finish_segment(orig, cs, cl, cur))
+    do_split_cells_loop(rest, db, orig, cs + cl + 1, 0, false, [], [part | acc])
   end
 
-  defp do_split_and_parse_cells(<<char, rest::binary>>, delimiter, current, in_quote, acc) do
-    do_split_and_parse_cells(rest, delimiter, [<<char>> | current], in_quote, acc)
-  end
+  defp do_split_cells_loop(<<_char, rest::binary>>, db, orig, cs, cl, iq, cur, acc),
+    do: do_split_cells_loop(rest, db, orig, cs, cl + 1, iq, cur, acc)
 
   # Auto-detect delimiter for comma-default case
   defp detect_delimiter(str, @comma) do

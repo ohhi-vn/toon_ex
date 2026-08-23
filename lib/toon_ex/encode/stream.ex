@@ -72,52 +72,57 @@ defmodule ToonEx.Encode.Stream do
   end
 
   defp do_encode_stream(data, depth, opts) when is_map(data) do
-    keys = get_ordered_keys(data, Map.get(opts, :key_order), [])
-    writer = Writer.new(opts.indent)
+    # Keyed tabular form at the root mirrors ToonEx.Encode.Objects.encode/3.
+    detected =
+      if depth == 0, do: Utils.detect_keyed_tabular(data), else: :error
 
-    # Build all chunks
-    result =
-      Enum.reduce_while(keys, {writer, []}, fn key, {w, acc} ->
-        value = Utils.object_get(data, key)
-        new_w = encode_entry_stream(w, key, value, depth, opts)
+    case detected do
+      {:ok, fields} ->
+        [header | rows] = Arrays.encode_keyed_fields(nil, data, fields, opts)
 
-        if writer_is_full?(new_w) do
-          {:halt, {new_w, [Writer.to_iodata(w) | acc]}}
-        else
-          {:cont, {new_w, acc}}
-        end
-      end)
+        writer =
+          Enum.reduce(rows, Writer.push(Writer.new(opts.indent), header, 0), fn row, acc ->
+            Writer.push(acc, row, 1)
+          end)
 
-    # Extract final writer and chunks from reduce_while result
-    # reduce_while returns {:halt, acc} if halted early, or acc if exhausted
-    {final_writer, chunks} =
-      case result do
-        {:halt, {w, ch}} -> {w, ch}
-        {:cont, {w, ch}} -> {w, ch}
-        {w, ch} -> {w, ch}
-      end
+        [[Writer.to_iodata(writer)]]
 
-    [Writer.to_iodata(final_writer) | Enum.reverse(chunks)]
+      :error ->
+        encode_chunked_map_stream(data, depth, opts)
+    end
   end
 
+  # Root arrays render through the writer so header and rows land on their own
   defp do_encode_stream(data, depth, opts) when is_list(data) do
     if data == [] do
-      [Arrays.encode_empty("items", opts.length_marker)]
+      [[Arrays.encode_empty("items", opts.length_marker)]]
     else
       case Utils.detect_tabular_fields(data) do
         {:ok, _fields} ->
-          [Arrays.encode_tabular("items", data, 0, opts)]
+          [render_array_lines(Arrays.encode_tabular("items", data, 0, opts), opts)]
 
         :error ->
           case detect_array_type(data) do
             {:primitive, _} ->
-              [Arrays.encode_inline("items", data, opts)]
+              # Inline arrays are a single line – safe as one raw chunk.
+              [[Arrays.encode_inline("items", data, opts)]]
 
             _ ->
-              [Arrays.encode_list("items", data, depth, opts)]
+              [render_array_lines(Arrays.encode_list("items", data, depth, opts), opts)]
           end
       end
     end
+  end
+
+  # Root arrays render through the writer so header and rows land on their own
+  # newline-separated lines (matching `ToonEx.encode!(%{"items" => list})`).
+  defp render_array_lines([header | rows], opts) do
+    writer =
+      Enum.reduce(rows, Writer.push(Writer.new(opts.indent), header, 0), fn row, acc ->
+        Writer.push(acc, row, 1)
+      end)
+
+    Writer.to_iodata(writer)
   end
 
   # Encode a single entry
@@ -228,8 +233,15 @@ defmodule ToonEx.Encode.Stream do
   defp encode_folded_value_stream(writer, folded_key, final_value, depth, opts)
        when is_map(final_value) do
     case Utils.detect_keyed_tabular(final_value) do
-      {:ok, _} ->
-        [header | rows] = Arrays.encode_keyed(folded_key, final_value, opts)
+      {:ok, fields} ->
+        [header | rows] =
+          Arrays.encode_keyed_fields(
+            Strings.encode_key(folded_key),
+            final_value,
+            fields,
+            opts
+          )
+
         writer = Writer.push(writer, header, depth)
 
         Enum.reduce(rows, writer, fn row, acc ->
@@ -248,8 +260,10 @@ defmodule ToonEx.Encode.Stream do
   # Map entry encoding for nested maps
   defp encode_map_entry_stream(writer, key, value, depth, opts) do
     case Utils.detect_keyed_tabular(value) do
-      {:ok, _} ->
-        [header | rows] = Arrays.encode_keyed(key, value, opts)
+      {:ok, fields} ->
+        [header | rows] =
+          Arrays.encode_keyed_fields(Strings.encode_key(key), value, fields, opts)
+
         writer = Writer.push(writer, header, depth)
 
         Enum.reduce(rows, writer, fn row, acc ->
@@ -322,6 +336,39 @@ defmodule ToonEx.Encode.Stream do
       do_iodata_split_lines(rest, [], [current_line | lines_rev])
     else
       do_iodata_split_lines(rest, [<<chunk>> | current_line_rev], lines_rev)
+    end
+  end
+
+  defp encode_chunked_map_stream(data, depth, opts) do
+    keys = get_ordered_keys(data, Map.get(opts, :key_order), [])
+    writer = Writer.new(opts.indent)
+
+    # When the working writer reaches the chunk threshold its content is
+    # flushed as one chunk and iteration continues with a fresh writer, so
+    # memory stays bounded and the concatenated chunks equal the full encoding.
+    {final_writer, chunks_rev} =
+      Enum.reduce(keys, {writer, []}, fn key, {w, acc} ->
+        value = Utils.object_get(data, key)
+        new_w = encode_entry_stream(w, key, value, depth, opts)
+
+        if writer_is_full?(new_w) do
+          {Writer.new(opts.indent), [Writer.to_iodata(new_w) | acc]}
+        else
+          {new_w, acc}
+        end
+      end)
+
+    # Flushed chunks hold earlier entries; the remaining writer holds the tail.
+    # Newlines go BETWEEN chunks so no trailing newline is introduced.
+    tail = Writer.to_iodata(final_writer)
+
+    case Enum.reverse(chunks_rev) do
+      [] ->
+        [tail]
+
+      chunks ->
+        parts = if tail == [], do: chunks, else: chunks ++ [tail]
+        Enum.intersperse(parts, Constants.newline())
     end
   end
 

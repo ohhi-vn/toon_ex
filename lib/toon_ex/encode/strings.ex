@@ -31,6 +31,22 @@ defmodule ToonEx.Encode.Strings do
             literal?: 1,
             contains_delimiter?: 2}
 
+  # Control characters (U+0000 to U+001F, U+007F) — escape as \uXXXX.
+  # Performance: compile-time lookup table instead of building each "\uXXXX"
+  # via Integer.to_string + downcase + pad_leading at encode time.
+  # (Module attributes expand in file order, so this precedes its uses.)
+  @escape_control_table Map.new(Enum.to_list(0..31) ++ [127], fn byte ->
+                          hex =
+                            byte
+                            |> Integer.to_string(16)
+                            |> String.downcase()
+                            |> String.pad_leading(4, "0")
+
+                          {byte, "\\u" <> hex}
+                        end)
+
+  defp escape_control(byte), do: Map.fetch!(@escape_control_table, byte)
+
   @doc """
   Encodes a string value, adding quotes if necessary.
 
@@ -217,14 +233,13 @@ defmodule ToonEx.Encode.Strings do
   defp do_escape_string(<<byte, rest::binary>>, original, chunk_start, chunk_len, acc, size_hint)
        when byte < 32 or byte == 127 do
     acc = flush_chunk(acc, original, chunk_start, chunk_len)
-    replacement = "\\u#{escape_control(byte)}"
 
     do_escape_string(
       rest,
       original,
       chunk_start + chunk_len + 1,
       0,
-      [replacement | acc],
+      [escape_control(byte) | acc],
       size_hint
     )
   end
@@ -267,18 +282,11 @@ defmodule ToonEx.Encode.Strings do
 
   # Control characters (U+0000 to U+001F, U+007F) — emit \uXXXX
   defp escape_byte(byte) when byte < 32 or byte == 127 do
-    "\\u#{escape_control(byte)}"
+    escape_control(byte)
   end
 
   # Safe ASCII (printable) — pass through
   defp escape_byte(_byte), do: nil
-
-  # Format a control character byte as 4-digit lowercase hex: U+001F → "001f"
-  # (Integer.to_string/2 emits uppercase for base 16; the spec uses lowercase)
-  defp escape_control(byte) do
-    hex = Integer.to_string(byte, 16) |> String.downcase()
-    String.pad_leading(hex, 4, "0")
-  end
 
   # ── Safe string detection ───────────────────────────────────────────────────
 

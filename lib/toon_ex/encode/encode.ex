@@ -130,7 +130,7 @@ defmodule ToonEx.Encode do
   def encode!(data, opts) do
     # Performance: Direct implementation - skip telemetry and error wrapping in hot path
     validated_opts = Options.validate!(opts)
-    normalized = Utils.normalize(data)
+    normalized = normalize_input(data)
 
     do_encode(normalized, 0, validated_opts)
     |> IO.iodata_to_binary()
@@ -141,9 +141,22 @@ defmodule ToonEx.Encode do
 
   # Private functions
 
+  # Root-level tuple lists (keyword lists) must keep their {key, value} shape:
+  # generic normalization would flatten each tuple to nil before the
+  # tuple_list? branch in do_encode/3 ever sees it.
+  defp normalize_input(data) when is_list(data) do
+    if tuple_list?(data) do
+      Enum.map(data, fn {k, v} -> {to_string(k), Utils.normalize(v)} end)
+    else
+      Utils.normalize(data)
+    end
+  end
+
+  defp normalize_input(data), do: Utils.normalize(data)
+
   @spec normalize(term()) :: {:ok, ToonEx.Types.encodable()} | {:error, EncodeError.t()}
   defp normalize(data) do
-    {:ok, Utils.normalize(data)}
+    {:ok, normalize_input(data)}
   rescue
     e ->
       {:error,
@@ -437,9 +450,9 @@ defmodule ToonEx.Encode do
           cond do
             is_map(v) ->
               case Utils.detect_keyed_tabular(v) do
-                {:ok, _} ->
+                {:ok, fields} ->
                   # Keyed tabular on hyphen line when first field (§9.5, §10)
-                  [header | rows] = Arrays.encode_keyed(k, v, opts)
+                  [header | rows] = Arrays.encode_keyed_fields(encoded_key, v, fields, opts)
 
                   marked_header =
                     if needs_marker,

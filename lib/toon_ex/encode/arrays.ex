@@ -139,6 +139,14 @@ defmodule ToonEx.Encode.Arrays do
     build_keyed_header(encoded_key, map, fields, opts)
   end
 
+  # Same as encode_keyed/3 and encode_keyed_encoded/2 but takes the field tree
+  # pre-computed by `Utils.detect_keyed_tabular/1`, so the data is not
+  # traversed twice. Callers that have already run detection should prefer this.
+  @spec encode_keyed_fields(iodata() | nil, map(), list(), map()) :: [iodata()]
+  def encode_keyed_fields(encoded_key, map, fields, opts) do
+    build_keyed_header(encoded_key, map, fields, opts)
+  end
+
   defp build_keyed_header(encoded_key, map, fields, opts) do
     length_marker = format_length_marker(Utils.object_size(map), opts.length_marker)
     delimiter_marker = format_delimiter_marker(opts.delimiter)
@@ -321,19 +329,17 @@ defmodule ToonEx.Encode.Arrays do
 
   # Reorder the top-level fields according to key_order when it covers every
   # top-level field; otherwise keep the detected (first-object) order.
+  # Performance: index fields by key once — O(k) instead of an O(k²)
+  # Enum.find inside Enum.map.
   defp apply_key_order(fields, key_order)
        when is_list(key_order) and key_order != [] do
-    top_keys =
-      Enum.map(fields, fn
-        {:leaf, k} -> k
-        {:group, k, _} -> k
-      end)
-
+    top_keys = Enum.map(fields, fn f -> field_key(f) end)
     key_set = MapSet.new(top_keys)
     ordered = Enum.filter(key_order, &MapSet.member?(key_set, &1))
 
     if length(ordered) == length(fields) do
-      Enum.map(ordered, fn k -> Enum.find(fields, fn f -> field_key(f) == k end) end)
+      fields_by_key = Map.new(fields, fn f -> {field_key(f), f} end)
+      Enum.map(ordered, &Map.fetch!(fields_by_key, &1))
     else
       fields
     end
@@ -539,8 +545,8 @@ defmodule ToonEx.Encode.Arrays do
   # Encode map values (keyed tabular on hyphen line if eligible, else nested)
   defp encode_value_with_optional_marker(key, v, needs_marker, depth, opts) when is_map(v) do
     case Utils.detect_keyed_tabular(v) do
-      {:ok, _} ->
-        [header | rows] = encode_keyed_encoded(key, v, opts)
+      {:ok, fields} ->
+        [header | rows] = encode_keyed_fields(key, v, fields, opts)
         header_line = apply_marker(header, needs_marker, opts)
         data_lines = Enum.map(rows, fn row -> [opts.indent_string, opts.indent_string, row] end)
         [header_line | data_lines]

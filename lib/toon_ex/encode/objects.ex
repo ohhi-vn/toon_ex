@@ -26,9 +26,13 @@ defmodule ToonEx.Encode.Objects do
   """
   @spec encode(map(), non_neg_integer(), map()) :: [iodata()]
   def encode(map, depth, opts) when is_map(map) do
-    if depth == 0 and match?({:ok, _}, Utils.detect_keyed_tabular(map)) do
+    detected = if depth == 0, do: Utils.detect_keyed_tabular(map), else: :error
+
+    if match?({:ok, _}, detected) do
       # Keyed tabular form at the root — keyless keyed header (§9.5, §5).
-      [header | rows] = Arrays.encode_keyed(nil, map, opts)
+      {:ok, fields} = detected
+
+      [header | rows] = Arrays.encode_keyed_fields(nil, map, fields, opts)
       writer = Writer.new(opts.indent)
       writer = Writer.push(writer, header, 0)
 
@@ -71,8 +75,10 @@ defmodule ToonEx.Encode.Objects do
   # with entry rows instead of a plain `key:` + nested fields.
   defp encode_map_entry(writer, key, value, depth, opts) do
     case Utils.detect_keyed_tabular(value) do
-      {:ok, _} ->
-        [header | rows] = Arrays.encode_keyed(key, value, opts)
+      {:ok, fields} ->
+        [header | rows] =
+          Arrays.encode_keyed_fields(Strings.encode_key(key), value, fields, opts)
+
         writer = Writer.push(writer, header, depth)
         Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, depth + 1) end)
 
@@ -122,8 +128,15 @@ defmodule ToonEx.Encode.Objects do
   defp encode_folded_value(writer, folded_key, final_value, depth, opts)
        when is_map(final_value) do
     case Utils.detect_keyed_tabular(final_value) do
-      {:ok, _} ->
-        [header | rows] = Arrays.encode_keyed(folded_key, final_value, opts)
+      {:ok, fields} ->
+        [header | rows] =
+          Arrays.encode_keyed_fields(
+            Strings.encode_key(folded_key),
+            final_value,
+            fields,
+            opts
+          )
+
         writer = Writer.push(writer, header, depth)
         Enum.reduce(rows, writer, fn row, acc -> Writer.push(acc, row, depth + 1) end)
 

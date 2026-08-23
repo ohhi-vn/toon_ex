@@ -157,14 +157,15 @@ defmodule ToonEx.Phoenix.Serializer do
     }
   end
 
+  # Matches the exact wire format produced by encode!/1 for
+  # %Phoenix.Socket.Message{} with a {:binary, data} payload:
+  # <<type, join_ref_size, topic_size, event_size, join_ref, topic, event, data>>
   defp decode_binary(<<
          @push::size(8),
          join_ref_size::size(8),
-         ref_size::size(8),
          topic_size::size(8),
          event_size::size(8),
          join_ref::binary-size(join_ref_size),
-         ref::binary-size(ref_size),
          topic::binary-size(topic_size),
          event::binary-size(event_size),
          data::binary
@@ -174,9 +175,52 @@ defmodule ToonEx.Phoenix.Serializer do
       topic: topic,
       event: event,
       payload: {:binary, data},
-      ref: ref,
+      ref: nil,
       join_ref: join_ref
     }
+  end
+
+  defp decode_binary(<<
+         @reply::size(8),
+         join_ref_size::size(8),
+         ref_size::size(8),
+         topic_size::size(8),
+         status_size::size(8),
+         join_ref::binary-size(join_ref_size),
+         ref::binary-size(ref_size),
+         topic::binary-size(topic_size),
+         status::binary-size(status_size),
+         data::binary
+       >>) do
+    %{
+      __struct__: Reply,
+      topic: topic,
+      ref: ref,
+      join_ref: join_ref,
+      status: String.to_existing_atom(status),
+      payload: {:binary, data}
+    }
+  end
+
+  defp decode_binary(<<
+         @broadcast::size(8),
+         topic_size::size(8),
+         event_size::size(8),
+         topic::binary-size(topic_size),
+         event::binary-size(event_size),
+         data::binary
+       >>) do
+    %{
+      __struct__: Broadcast,
+      topic: topic,
+      event: event,
+      payload: {:binary, data}
+    }
+  end
+
+  defp decode_binary(bin) when is_binary(bin) do
+    raise ArgumentError,
+          "invalid binary frame: expected a Phoenix.Socket.Message, Reply or Broadcast frame, got #{byte_size(bin)} bytes"
   end
 
   defp byte_size!(bin, kind, max) do

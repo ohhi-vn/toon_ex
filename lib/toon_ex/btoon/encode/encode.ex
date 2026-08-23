@@ -143,14 +143,18 @@ defmodule ToonEx.Btoon.Encode do
     assemble(opts, ctx, body)
   end
 
+  # Compiled schemas take precedence: validate!/1 auto-compiles any :schema,
+  # so this clause must match before the generic %Schema{} (itself a map)
+  # clause below, or the specialized encoder could never run.
+  defp encode_body(data, %{compiled_schema: compiled}, ctx)
+       when is_map(compiled) and compiled != %{} and is_map(data) do
+    SchemaCompiler.encode_schema_body(compiled, data, ctx)
+  end
+
   defp encode_body(data, %{schema: nil}, ctx), do: encode_value(data, 0, ctx)
 
   defp encode_body(data, %{schema: schema}, ctx) when is_map(schema) do
     encode_schema_body(schema, data, ctx)
-  end
-
-  defp encode_body(data, %{compiled_schema: compiled}, ctx) when is_map(data) do
-    SchemaCompiler.encode_schema_body(compiled, data, ctx)
   end
 
   defp encode_body(_data, %{schema: schema}, _ctx) do

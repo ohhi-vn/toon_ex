@@ -303,7 +303,7 @@ defmodule ToonEx.Phoenix.SerializerTest do
   end
 
   describe "decode!/2 with binary opcode" do
-    test "decodes binary reply frame - not supported by decode_binary" do
+    test "round-trips a binary reply frame" do
       reply =
         reply(
           topic: "room:1",
@@ -314,12 +314,14 @@ defmodule ToonEx.Phoenix.SerializerTest do
         )
 
       {:socket_push, :binary, bin} = Serializer.encode!(reply)
+      decoded = Serializer.decode!(bin, opcode: :binary)
 
-      # Note: decode_binary only handles push type (0), not reply (1) or broadcast (2)
-      # This test documents that binary reply/broadcast can't be decoded by decode_binary
-      assert_raise FunctionClauseError, fn ->
-        Serializer.decode!(bin, opcode: :binary)
-      end
+      assert decoded.__struct__ == Phoenix.Socket.Reply
+      assert decoded.topic == "room:1"
+      assert decoded.join_ref == "jr"
+      assert decoded.ref == "r1"
+      assert decoded.status == :ok
+      assert decoded.payload == {:binary, <<"data">>}
     end
 
     test "decodes binary push frame - format matches what encode! produces" do
@@ -333,11 +335,33 @@ defmodule ToonEx.Phoenix.SerializerTest do
         )
 
       {:socket_push, :binary, bin} = Serializer.encode!(msg)
+      decoded = Serializer.decode!(bin, opcode: :binary)
 
-      # decode_binary expects a ref field, but encode! omits it.
-      # Therefore, decode_binary cannot decode this output.
-      assert_raise FunctionClauseError, fn ->
-        Serializer.decode!(bin, opcode: :binary)
+      # encode!/1 does not serialize the ref for binary push frames
+      assert decoded.__struct__ == Phoenix.Socket.Message
+      assert decoded.topic == "room:1"
+      assert decoded.event == "new_msg"
+      assert decoded.join_ref == "jr"
+      assert decoded.ref == nil
+      assert decoded.payload == {:binary, <<"data">>}
+    end
+
+    test "round-trips a binary broadcast frame" do
+      broadcast =
+        broadcast(topic: "room:1", event: "new_msg", payload: {:binary, <<"data">>})
+
+      {:socket_push, :binary, bin} = Serializer.fastlane!(broadcast)
+      decoded = Serializer.decode!(bin, opcode: :binary)
+
+      assert decoded.__struct__ == Phoenix.Socket.Broadcast
+      assert decoded.topic == "room:1"
+      assert decoded.event == "new_msg"
+      assert decoded.payload == {:binary, <<"data">>}
+    end
+
+    test "raises ArgumentError on malformed binary frames" do
+      assert_raise ArgumentError, fn ->
+        Serializer.decode!(<<255, 1, 2, 3>>, opcode: :binary)
       end
     end
   end

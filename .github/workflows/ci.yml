@@ -15,25 +15,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        elixir: ["1.15", "1.16", "1.17", "1.18", "1.19"]
-        otp: ["25", "26", "27", "28"]
+        # Keep in sync with the `elixir: "~> 1.18"` requirement in mix.exs
+        elixir: ["1.18", "1.19"]
+        otp: ["26", "27", "28"]
         exclude:
-          # Elixir 1.15 doesn't support OTP 27+
-          - elixir: "1.15"
-            otp: "27"
-          - elixir: "1.15"
+          # Elixir 1.18 doesn't support OTP 28
+          - elixir: "1.18"
             otp: "28"
-          # Elixir 1.16 doesn't support OTP 27+
-          - elixir: "1.16"
-            otp: "27"
-          - elixir: "1.16"
-            otp: "28"
-          # Elixir 1.17 doesn't support OTP 28
-          - elixir: "1.17"
-            otp: "28"
-          # Elixir 1.19 doesn't support OTP 25
-          - elixir: "1.19"
-            otp: "25"
 
     steps:
       - name: Checkout code

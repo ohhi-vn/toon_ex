@@ -135,135 +135,6 @@ defmodule ToonEx.Utils do
   defp do_all_primitives?(_), do: false
 
   @doc """
-  Checks if all elements in a list are maps.
-
-  ## Examples
-
-      iex> ToonEx.Utils.all_maps?([%{}, %{}])
-      true
-
-      iex> ToonEx.Utils.all_maps?([%{"a" => 1}, %{"b" => 2}])
-      true
-
-      iex> ToonEx.Utils.all_maps?([%{}, 1])
-      false
-
-      iex> ToonEx.Utils.all_maps?([])
-      true
-  """
-  @spec all_maps?(list()) :: boolean()
-  def all_maps?(list) when is_list(list) do
-    do_all_maps?(list)
-  end
-
-  # Tail-recursive helper for performance
-  defp do_all_maps?([]), do: true
-  defp do_all_maps?([h | t]) when is_map(h), do: do_all_maps?(t)
-  defp do_all_maps?(_), do: false
-
-  @doc """
-  Checks if all maps in a list have the same keys (for tabular format detection).
-
-  ## Examples
-
-      iex> ToonEx.Utils.same_keys?([%{"a" => 1}, %{"a" => 2}])
-      true
-
-      iex> ToonEx.Utils.same_keys?([%{"a" => 1, "b" => 2}, %{"a" => 3, "b" => 4}])
-      true
-
-      iex> ToonEx.Utils.same_keys?([%{"a" => 1}, %{"b" => 2}])
-      false
-
-      iex> ToonEx.Utils.same_keys?([%{}, %{}])
-      false
-
-      iex> ToonEx.Utils.same_keys?([])
-      true
-  """
-  @spec same_keys?(list()) :: boolean()
-  def same_keys?([]), do: true
-
-  # don't treat empty maps has same keys
-  def same_keys?([first | rest]) when is_map(first) and map_size(first) > 0 do
-    first_keys = object_keys(first) |> Enum.sort()
-    do_same_keys?(rest, first_keys)
-  end
-
-  def same_keys?(_), do: false
-
-  # Tail-recursive helper for performance
-  defp do_same_keys?([], _first_keys), do: true
-
-  defp do_same_keys?([map | rest], first_keys) when is_map(map) do
-    if object_keys(map) |> Enum.sort() == first_keys do
-      do_same_keys?(rest, first_keys)
-    else
-      false
-    end
-  end
-
-  defp do_same_keys?(_, _), do: false
-
-  @doc """
-  Checks if all values in all maps of a list are primitives (for tabular format).
-
-  ## Examples
-
-      iex> ToonEx.Utils.all_primitive_values?([%{"a" => 1}, %{"a" => 2}])
-      true
-
-      iex> ToonEx.Utils.all_primitive_values?([%{"a" => 1, "b" => "x"}, %{"a" => 2, "b" => "y"}])
-      true
-
-      iex> ToonEx.Utils.all_primitive_values?([%{"a" => %{"nested" => 1}}])
-      false
-
-      iex> ToonEx.Utils.all_primitive_values?([%{"a" => [1, 2]}])
-      false
-
-      iex> ToonEx.Utils.all_primitive_values?([])
-      true
-  """
-  @spec all_primitive_values?(list()) :: boolean()
-
-  def all_primitive_values?([]), do: true
-
-  def all_primitive_values?(list) when is_list(list) do
-    do_all_primitive_values?(list)
-  end
-
-  def all_primitive_values?(_), do: false
-
-  # Tail-recursive helper for performance - single pass through all maps and values
-  defp do_all_primitive_values?([]), do: true
-
-  defp do_all_primitive_values?([map | rest]) when is_map(map) do
-    if do_all_values_primitive?(map) do
-      do_all_primitive_values?(rest)
-    else
-      false
-    end
-  end
-
-  defp do_all_primitive_values?(_), do: false
-
-  # Tail-recursive helper to check all values in a single map
-  defp do_all_values_primitive?(map) when is_map(map) do
-    do_all_values_primitive?(map, object_keys(map))
-  end
-
-  defp do_all_values_primitive?(_map, []), do: true
-
-  defp do_all_values_primitive?(map, [key | rest]) do
-    case object_get(map, key) do
-      nil -> do_all_values_primitive?(map, rest)
-      v when is_boolean(v) or is_number(v) or is_binary(v) -> do_all_values_primitive?(map, rest)
-      _ -> false
-    end
-  end
-
-  @doc """
   Repeats a string n times.
 
   ## Examples
@@ -299,8 +170,6 @@ defmodule ToonEx.Utils do
       nil
   """
   @spec normalize(term()) :: ToonEx.Types.encodable()
-  # Performance: Inline hot function to reduce call overhead
-  @compile {:inline, normalize: 1}
 
   # Fast-path for primitives - return immediately (no allocation)
   def normalize(nil), do: nil
@@ -319,61 +188,160 @@ defmodule ToonEx.Utils do
     end
   end
 
-  # Lists: tail-recursive normalization for performance
-  def normalize(value) when is_list(value) do
-    do_normalize_list(value, [])
-  end
+  # Performance: composite values return the ORIGINAL term when already fully
+  # normalized, and share untouched prefixes/subtrees when only some nodes
+  # require conversion. A fresh copy is built only along the changed spine.
+  def normalize(value) when is_list(value), do: unwrap(norm(value))
 
-  # OrderedObject - preserve declared key order while normalizing values
+  # OrderedObject - preserve declared key order while normalizing values.
   # An empty ordered object normalizes to the empty map so list-item encoding
   # renders the bare marker (same as an empty plain object).
-  def normalize(%ToonEx.OrderedObject{values: values}) do
-    if values == [] do
-      %{}
-    else
-      %ToonEx.OrderedObject{
-        values: Enum.map(values, fn {k, v} -> {to_string(k), normalize(v)} end)
-      }
-    end
-  end
+  def normalize(%ToonEx.OrderedObject{} = oo), do: unwrap(norm(oo))
 
   # Fragment - pass through unchanged so do_encode can handle it specially
   # (avoid converting pre-encoded iodata into a plain binary string)
   def normalize(%ToonEx.Fragment{} = fragment), do: fragment
 
   # Structs - dispatch to ToonEx.Encoder protocol
-  def normalize(%{__struct__: _} = struct) do
-    result = ToonEx.Encoder.encode(struct, [])
+  def normalize(%{__struct__: _} = struct), do: encode_struct_result(struct)
 
-    case result do
-      binary when is_binary(binary) -> binary
-      map when is_map(map) -> normalize(map)
-      iodata -> IO.iodata_to_binary(iodata)
-    end
-  end
-
-  # Maps: use :maps.fold for key transformation (to_string) and value normalization
-  # :maps.map/2 cannot transform keys, so we use :maps.fold/3 with accumulator
-  def normalize(value) when is_map(value) do
-    # Performance: Use :maps.fold with list accumulator to avoid N intermediate map allocations
-    # Then convert to map once at the end
-    :maps.fold(
-      fn k, v, acc ->
-        [{to_string(k), normalize(v)} | acc]
-      end,
-      [],
-      value
-    )
-    |> Map.new()
-  end
+  # Maps: convert atom keys to strings and normalize values
+  def normalize(value) when is_map(value), do: unwrap(norm(value))
 
   # Fallback for unsupported types
   def normalize(_value), do: nil
 
-  # Tail-recursive list normalization - avoids intermediate list allocations
-  @compile {:inline, do_normalize_list: 2}
-  defp do_normalize_list([], acc), do: :lists.reverse(acc)
-  defp do_normalize_list([h | t], acc), do: do_normalize_list(t, [normalize(h) | acc])
+  defp encode_struct_result(struct) do
+    result = ToonEx.Encoder.encode(struct, [])
+
+    case result do
+      binary when is_binary(binary) -> binary
+      map when is_map(map) -> unwrap(norm(map))
+      iodata -> IO.iodata_to_binary(iodata)
+    end
+  end
+
+  # ── Tagged normalization internals ──────────────────────────────────────────
+  # `norm/1` returns {:same, v} when the normalized form of the input is the
+  # identical term v (nothing needed conversion), or {:new, v} otherwise.
+  # Primitives are handled here too so nested elements can recurse safely.
+
+  @compile {:inline, unwrap: 1}
+  defp unwrap({_tag, value}), do: value
+
+  @compile {:inline, norm: 1}
+  defp norm(value) when is_nil(value) or is_boolean(value) or is_binary(value),
+    do: {:same, value}
+
+  defp norm(value) when is_integer(value), do: {:same, value}
+
+  defp norm(value) when is_float(value) do
+    cond do
+      value == 0 -> {:new, 0}
+      is_finite(value) -> {:same, value}
+      true -> {:new, nil}
+    end
+  end
+
+  defp norm(value) when is_atom(value), do: {:new, Atom.to_string(value)}
+
+  defp norm(%ToonEx.Fragment{} = fragment), do: {:same, fragment}
+
+  defp norm(list) when is_list(list), do: do_norm_list(list)
+
+  defp norm(%ToonEx.OrderedObject{values: []}), do: {:new, %{}}
+
+  defp norm(%ToonEx.OrderedObject{} = oo) do
+    case do_norm_pair_list(oo.values) do
+      {:same, _} -> {:same, oo}
+      {:new, values} -> {:new, %ToonEx.OrderedObject{values: values}}
+    end
+  end
+
+  defp norm(%{__struct__: _} = struct), do: {:new, encode_struct_result(struct)}
+
+  defp norm(map) when is_map(map) do
+    if map_normalized?(map) do
+      {:same, map}
+    else
+      {:new, build_normalized_map(map)}
+    end
+  end
+
+  # Fallback for unsupported types (pids, refs, functions, ...)
+  defp norm(_value), do: {:new, nil}
+
+  # Lists: share the original spine up to the first element that requires
+  # conversion; rebuild only the tail from there.
+  defp do_norm_list([]), do: {:same, []}
+
+  defp do_norm_list([h | t] = list) do
+    case norm(h) do
+      {:same, _} ->
+        case do_norm_list(t) do
+          {:same, _} -> {:same, list}
+          {:new, nt} -> {:new, [h | nt]}
+        end
+
+      {:new, nh} ->
+        {:new, [nh | unwrap(do_norm_list(t))]}
+    end
+  end
+
+  # OrderedObject pair lists: same spine-sharing. The struct itself is reused
+  # when every key is a binary and no value changed.
+  defp do_norm_pair_list([]), do: {:same, []}
+
+  defp do_norm_pair_list([{k, v} | t] = pairs) when is_binary(k) do
+    case norm(v) do
+      {:same, _} ->
+        case do_norm_pair_list(t) do
+          {:same, _} -> {:same, pairs}
+          {:new, nt} -> {:new, [{k, v} | nt]}
+        end
+
+      {:new, nv} ->
+        {:new, [{k, nv} | unwrap(do_norm_pair_list(t))]}
+    end
+  end
+
+  # Non-binary key forces conversion from this pair onward
+  defp do_norm_pair_list([{k, v} | t]) do
+    nk = to_string(k)
+    {:new, [{nk, unwrap(norm(v))} | unwrap(do_norm_pair_list(t))]}
+  end
+
+  # Map check pass: true when every key is a binary and every value is
+  # already normalized (norm/1 would return :same for it).
+  defp map_normalized?(map) do
+    iter = :maps.iterator(map)
+    do_map_normalized?(iter)
+  end
+
+  defp do_map_normalized?(iter) do
+    case :maps.next(iter) do
+      :none ->
+        true
+
+      {k, v, next_iter} when is_binary(k) ->
+        case norm(v) do
+          {:same, _} -> do_map_normalized?(next_iter)
+          {:new, _} -> false
+        end
+
+      {_k, _v, _next_iter} ->
+        false
+    end
+  end
+
+  defp build_normalized_map(map) do
+    :maps.fold(
+      fn k, v, acc -> [{to_string(k), unwrap(norm(v))} | acc] end,
+      [],
+      map
+    )
+    |> Map.new()
+  end
 
   @doc """
   Checks if all values in a map are primitives.
@@ -589,20 +557,37 @@ defmodule ToonEx.Utils do
   def value_at_path(obj, [key | rest]) when is_map(obj),
     do: value_at_path(object_get(obj, key), rest)
 
-  # Every element is a non-empty map and all share the same key set
+  # Every element is a non-empty map and all share the same key set.
+  # Performance: set-equality check (equal size + all of the first object's
+  # keys present) instead of sorting each row's keys — O(k) per row instead
+  # of O(k log k).
   defp uniform_objects?(values) do
     case values do
-      [first | rest] when is_map(first) and map_size(first) > 0 ->
-        first_keys = Enum.sort(object_keys(first))
+      [first | rest] when is_map(first) ->
+        size = object_size(first)
 
-        Enum.all?(rest, fn v ->
-          is_map(v) and object_size(v) > 0 and Enum.sort(object_keys(v)) == first_keys
-        end)
+        if size > 0 do
+          first_keys = object_keys(first)
+
+          Enum.all?(rest, fn v ->
+            is_map(v) and object_size(v) == size and has_all_keys?(v, first_keys)
+          end)
+        else
+          false
+        end
 
       _ ->
         false
     end
   end
+
+  @compile {:inline, has_all_keys?: 2}
+  defp has_all_keys?(obj, keys), do: do_has_all_keys?(keys, obj)
+
+  defp do_has_all_keys?([], _obj), do: true
+
+  defp do_has_all_keys?([key | rest], obj),
+    do: object_has_key?(obj, key) and do_has_all_keys?(rest, obj)
 
   defp classify_subfields([], _values), do: {:ok, []}
 
@@ -664,14 +649,19 @@ defmodule ToonEx.Utils do
   def format_delimiter_marker(","), do: ""
   def format_delimiter_marker(delimiter), do: delimiter
 
+  # Maximum finite IEEE 754 double-precision float. Values beyond this are
+  # infinity; the value itself and anything smaller is finite.
+  # credo:disable-for-next-line Credo.Check.Readability.LargeNumbers
+  @max_float64 1.7976931348623157e308
+
   # Private helper to check if a number is finite
   @compile {:inline, is_finite: 1}
   defp is_finite(value) when is_float(value) do
     # NaN check: NaN != NaN is the standard IEEE 754 way to detect NaN
     # credo:disable-for-lines:2
     is_nan = value != value
-    # Infinity check: infinity is beyond maximum representable float
-    is_inf = abs(value) > 1.0e308
+    # Infinity check: infinity exceeds the maximum representable float
+    is_inf = abs(value) > @max_float64
 
     not is_nan and not is_inf
   end
