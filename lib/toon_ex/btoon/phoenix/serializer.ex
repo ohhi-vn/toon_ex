@@ -18,10 +18,14 @@ defmodule ToonEx.Btoon.Phoenix.Serializer do
 
   ## Text (BTOON) Frames
 
-  For map payloads the payload is serialized with `Btoon.encode_to_iodata!/1`
-  (BTOON binary), and `decode!/2` with `opcode: :binary` decodes it back as
-  required by Phoenix WebSockets. The `:btoon` opcode is also accepted for direct
-  use in applications and tests.
+  Map payloads are serialized with `Btoon.encode_to_iodata!/1` (BTOON binary),
+  and `decode!/2` with `opcode: :binary` decodes them back as required by
+  Phoenix WebSockets. The `:btoon` opcode is also accepted for direct use in
+  applications and tests.
+
+  This serializer is BTOON-only: incoming `:text` frames must carry a BTOON
+  payload starting with the `"BTON"` magic. Anything else raises `ArgumentError`.
+  Use `ToonEx.Phoenix.Serializer` for TOON text frames.
 
   Note: This is a workaround to avoid adding a Phoenix library dependency.
   """
@@ -134,15 +138,26 @@ defmodule ToonEx.Btoon.Phoenix.Serializer do
 
   def decode!(raw_message, opts) do
     case Keyword.fetch(opts, :opcode) do
+      {:ok, :text} -> decode_text(raw_message)
       {:ok, :btoon} -> decode_btoon(raw_message)
       {:ok, :binary} -> decode_binary(raw_message)
     end
   end
 
+  def decode_text(<<"BTON", _rest::binary>> = raw_message), do: decode_btoon(raw_message)
+
+  def decode_text(raw_message) do
+    raise ArgumentError,
+          "expected a BTOON frame starting with the \"BTON\" magic, got: #{inspect(raw_message)}"
+  end
+
   def decode_btoon(raw_message) do
     Logger.debug(fn -> "custom btoon serializer decoding raw msg: #{inspect(raw_message)}" end)
     [join_ref, ref, topic, event, payload | _] = @lib.decode!(raw_message)
+    message(join_ref, ref, topic, event, payload)
+  end
 
+  defp message(join_ref, ref, topic, event, payload) do
     %{
       __struct__: Message,
       topic: topic,

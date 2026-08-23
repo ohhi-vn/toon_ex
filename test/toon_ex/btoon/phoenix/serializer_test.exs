@@ -190,6 +190,43 @@ defmodule ToonEx.Btoon.Phoenix.SerializerTest do
 
   # ── decode!/2 ────────────────────────────────────────────────────────────────
 
+  describe "decode!/2 with text opcode" do
+    test "decodes BTOON payload sent as text frame" do
+      msg =
+        message(
+          topic: "room:1",
+          event: "phx_join",
+          join_ref: "jr",
+          ref: "r1",
+          payload: %{"device" => "simu", "vsn" => "2.0.0"}
+        )
+
+      {:socket_push, :binary, data} = Serializer.encode!(msg)
+      decoded = Serializer.decode!(IO.iodata_to_binary(data), opcode: :text)
+
+      assert decoded.__struct__ == Message
+      assert decoded.topic == "room:1"
+      assert decoded.event == "phx_join"
+      assert decoded.join_ref == "jr"
+      assert decoded.ref == "r1"
+      assert decoded.payload == %{"device" => "simu", "vsn" => "2.0.0"}
+    end
+
+    test "raises ArgumentError when frame lacks BTON magic" do
+      assert_raise ArgumentError,
+                   ~r/expected a BTOON frame starting with the "BTON" magic/,
+                   fn ->
+                     Serializer.decode!("jr r1 room:1 new_msg {}", opcode: :text)
+                   end
+    end
+
+    test "raises DecodeError for corrupt BTOON payload" do
+      assert_raise ToonEx.Btoon.DecodeError, fn ->
+        Serializer.decode!("BTONgarbage", opcode: :text)
+      end
+    end
+  end
+
   describe "decode!/2 with btoon opcode" do
     test "decodes BTOON frame to Message struct" do
       msg =
