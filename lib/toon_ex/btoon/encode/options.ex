@@ -21,8 +21,6 @@ defmodule ToonEx.Btoon.Encode.Options do
       columnar `ObjectTable` (tag `0x0D`).
   """
 
-  alias ToonEx.Btoon.SchemaCompiler
-
   @defaults %{
     dictionary: nil,
     string_table: :auto,
@@ -67,7 +65,10 @@ defmodule ToonEx.Btoon.Encode.Options do
   def validate([]), do: {:ok, @defaults}
 
   def validate(opts) when is_list(opts) do
-    validate_opts(opts, @defaults)
+    case validate_opts(opts, @defaults) do
+      {:ok, validated} -> cross_validate(validated)
+      error -> error
+    end
   end
 
   def validate(_), do: {:error, "options must be a keyword list"}
@@ -90,37 +91,31 @@ defmodule ToonEx.Btoon.Encode.Options do
     end
   end
 
+  defp cross_validate(validated) do
+    cond do
+      validated.no_string_table && !validated.dictionary ->
+        {:error, "no_string_table requires a dictionary to be set"}
+
+      validated.schema_id_uint16 && !validated.schema ->
+        {:error, "schema_id_uint16 requires a schema to be set"}
+
+      validated.schema_id_uint16 &&
+          (validated.schema.id < 0 or validated.schema.id > 65_535) ->
+        {:error, "schema_id_uint16 requires a schema id in 0..65535"}
+
+      true ->
+        {:ok, validated}
+    end
+  end
+
   @doc """
   Validates encoding options, raising `ArgumentError` on error.
   """
   @spec validate!(keyword()) :: validated()
   def validate!(opts) do
     case validate(opts) do
-      {:ok, validated} ->
-        # Cross-option validation
-        if validated.no_string_table && !validated.dictionary do
-          raise ArgumentError, "no_string_table requires a dictionary to be set"
-        end
-
-        if validated.schema_id_uint16 && !validated.schema do
-          raise ArgumentError, "schema_id_uint16 requires a schema to be set"
-        end
-
-        if validated.schema_id_uint16 &&
-             (validated.schema.id < 0 or validated.schema.id > 65_535) do
-          raise ArgumentError, "schema_id_uint16 requires a schema id in 0..65535"
-        end
-
-        # Compile schema if provided
-        if validated.schema do
-          compiled = SchemaCompiler.compile(validated.schema)
-          Map.put(validated, :compiled_schema, compiled)
-        else
-          validated
-        end
-
-      {:error, message} ->
-        raise ArgumentError, message
+      {:ok, validated} -> validated
+      {:error, message} -> raise ArgumentError, message
     end
   end
 

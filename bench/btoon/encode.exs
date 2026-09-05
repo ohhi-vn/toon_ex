@@ -12,7 +12,7 @@ Benchee.run(
   %{
     "Btoon.encode!" => fn input -> ToonEx.Btoon.encode!(input) end,
     "ToonEx.encode!" => fn input -> ToonEx.encode!(input) end,
-    "Jason.encode!" => fn input -> Jason.encode!(input) end
+    "JSON.encode!" => fn input -> JSON.encode!(input) end
   },
   inputs: inputs,
   time: 5,

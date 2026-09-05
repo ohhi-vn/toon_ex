@@ -3,7 +3,7 @@ defmodule ToonEx.Btoon do
   BTOON — a compact binary codec for the TOON data model.
 
   BTOON is the binary transport encoding of the TOON data model (see the
-  BTOON specification in `btoon_spec/spec.md`). Unlike TOON's text form it
+  BTOON specification in repo [BTOON](https://github.com/ohhi-vn/btoon_specs)). Unlike TOON's text form it
   is optimized for CPU cost first and wire size second:
 
     * a fixed 8-byte envelope (`"BTON"` magic, version, flags) with an

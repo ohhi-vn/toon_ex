@@ -134,5 +134,5 @@ defmodule BtoonBenchData do
   def toon_string(data), do: ToonEx.encode!(data)
 
   @doc "Encode data to JSON text"
-  def json_string(data), do: Jason.encode!(data)
+  def json_string(data), do: JSON.encode!(data)
 end

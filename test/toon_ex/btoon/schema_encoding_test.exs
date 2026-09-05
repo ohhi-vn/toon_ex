@@ -1,57 +1,15 @@
-defmodule ToonEx.Btoon.SchemaCompilerTest do
+defmodule ToonEx.Btoon.SchemaEncodingTest do
   use ExUnit.Case, async: true
 
   alias ToonEx.Btoon
-  alias ToonEx.Btoon.{Binary, Schema, SchemaCompiler}
+  alias ToonEx.Btoon.{Binary, Schema}
 
   defp roundtrip_with(schema, value, opts \\ []) do
     bin = Btoon.encode!(value, Keyword.put(opts, :schema, schema))
     Btoon.decode!(bin)
   end
 
-  describe "compile/1" do
-    test "produces fields with encoders and fixed sizes" do
-      schema =
-        Schema.new(7, "T", [
-          %{name: "a", type: :int32},
-          %{name: "b", type: :string},
-          %{name: "c", type: :bool}
-        ])
-
-      compiled = SchemaCompiler.compile(schema)
-
-      assert compiled.id == 7
-      assert compiled.name == "T"
-
-      assert [%{name: "a", size: 4}, %{name: "b", size: 0}, %{name: "c", size: 1}] =
-               compiled.fields
-
-      assert is_function(compiled.fields |> hd() |> Map.get(:encoder), 2)
-    end
-
-    test "all fixed-width types report their byte sizes" do
-      sizes = %{
-        int8: 1,
-        uint8: 1,
-        int16: 2,
-        uint16: 2,
-        int32: 4,
-        uint32: 4,
-        int64: 8,
-        uint64: 8,
-        float32: 4,
-        float64: 8,
-        bool: 1
-      }
-
-      for {type, size} <- sizes do
-        compiled = SchemaCompiler.compile(Schema.new(1, "S", [%{name: "v", type: type}]))
-        assert hd(compiled.fields).size == size, "expected #{size} for #{inspect(type)}"
-      end
-    end
-  end
-
-  describe "encode_schema_body via Btoon.encode!/2 with :compiled_schema" do
+  describe "schema body encoding via Btoon.encode!/2" do
     test "fixed-width integers at their range boundaries" do
       schema =
         Schema.new(1, "I", [
@@ -147,6 +105,63 @@ defmodule ToonEx.Btoon.SchemaCompilerTest do
       assert Btoon.decode!(bin) == value
     end
 
+    test "nested typed array buffers stay element-aligned" do
+      # The float64 buffer must land on an 8-byte boundary within the
+      # message regardless of the fields encoded before it (§16).
+      schema =
+        Schema.new(13, "Aligned", [
+          %{name: "id", type: :int32},
+          %{name: "label", type: :string},
+          %{name: "nums", type: :array}
+        ])
+
+      value = %{"id" => 7, "label" => "abc", "nums" => [0.1, 0.2]}
+
+      bin = Btoon.encode!(value, schema: schema)
+
+      assert {:ok, %{"nums" => [0.1, 0.2]}} = Btoon.decode(bin)
+
+      <<
+        "BTON",
+        1,
+        0x06,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        3,
+        0,
+        0,
+        0,
+        "abc",
+        _pad1::binary-size(5),
+        _schema::binary-size(48),
+        13,
+        0,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        0x0B,
+        0x40,
+        0x0C,
+        0x08,
+        2,
+        0,
+        0,
+        0,
+        7,
+        _pad::binary-size(7),
+        rest::binary
+      >> = bin
+
+      assert rest == <<0.1::64-little-float, 0.2::64-little-float>>
+    end
+
     test "object tables are used when enabled for uniform numeric rows" do
       schema = Schema.new(10, "OT", [%{name: "rows", type: :array}])
 
@@ -183,10 +198,9 @@ defmodule ToonEx.Btoon.SchemaCompilerTest do
     end
   end
 
-  describe "compiled field encoder errors" do
+  describe "schema field errors" do
     defp encode_error_for(type, bad_value) do
       schema = Schema.new(99, "E", [%{name: "v", type: type}])
-      compiled = SchemaCompiler.compile(schema)
 
       assert_raise Btoon.EncodeError, fn ->
         Btoon.encode!(%{"v" => bad_value}, schema: schema)
@@ -222,10 +236,9 @@ defmodule ToonEx.Btoon.SchemaCompilerTest do
 
     test "null field tolerates only nil" do
       schema = Schema.new(12, "N", [%{name: "v", type: :null}])
-      compiled = SchemaCompiler.compile(schema)
 
       assert_raise Btoon.EncodeError, fn ->
-        Btoon.encode!(%{"v" => false}, compiled_schema: compiled)
+        Btoon.encode!(%{"v" => false}, schema: schema)
       end
     end
 
@@ -233,10 +246,19 @@ defmodule ToonEx.Btoon.SchemaCompilerTest do
       encode_error_for(:string, 42)
       encode_error_for(:string, nil)
     end
+
+    test "missing field value raises" do
+      schema =
+        Schema.new(20, "M", [%{name: "present", type: :int32}, %{name: "absent", type: :int32}])
+
+      assert_raise Btoon.EncodeError, fn ->
+        Btoon.encode!(%{"present" => 1}, schema: schema)
+      end
+    end
   end
 
-  describe "compiled vs generic schema encoding equivalence" do
-    test "compiled output decodes identically to generic schema mode" do
+  describe "determinism between encode/2 and encode!/2 in schema mode" do
+    test "both entry points produce identical bytes" do
       schema =
         Schema.new(77, "Eq", [
           %{name: "id", type: :int32},
@@ -248,12 +270,10 @@ defmodule ToonEx.Btoon.SchemaCompilerTest do
       value = %{"id" => 3, "label" => "eq", "score" => 9.75, "tags" => ["a", "b"]}
 
       bang = Btoon.encode!(value, schema: schema)
-      assert Btoon.decode!(bang) == value
+      {:ok, ok} = Btoon.encode(value, schema: schema)
 
-      # The non-raising API skips auto-compilation and takes the generic
-      # schema clause; its output must decode identically.
-      {:ok, non_bang} = Btoon.encode(value, schema: schema)
-      assert Btoon.decode!(non_bang) == value
+      assert bang == ok
+      assert Btoon.decode!(bang) == value
     end
   end
 end

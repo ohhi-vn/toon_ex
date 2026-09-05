@@ -12,10 +12,11 @@ defmodule ToonEx.Btoon.ElementType do
 
   ## Deterministic type selection
 
-  `detect_type/1` maps a homogeneous numeric list to the narrowest signed
-  integer type that represents every value losslessly, or `:float32` when
-  every float survives the float32 round-trip and `:float64` otherwise.
-  Every list therefore has exactly one encoding.
+  `detect_type/1` maps a homogeneous numeric list to the narrowest integer
+  type that represents every value losslessly — signed preferred when a
+  signed and an unsigned type of the same width both fit — or `:float32`
+  when every float survives the float32 round-trip and `:float64`
+  otherwise. Every list therefore has exactly one encoding.
   """
 
   alias ToonEx.Btoon.Constants
@@ -164,12 +165,19 @@ defmodule ToonEx.Btoon.ElementType do
   Detects the narrowest element type for a homogeneous numeric list.
 
   Returns `{:ok, type}` or `:error` when the list is empty, mixed, or
-  contains integers outside the int64 range.
+  contains integers outside the representable range. Follows the
+  narrowest-lossless rule: unsigned types are used when the values are all
+  non-negative and no signed type of the same width fits; `:uint64` is only
+  returned when `allow_uint64` is set (ObjectTable columns allow it,
+  TypedArray buffers do not).
   """
-  @spec detect_type([number()]) :: {:ok, ToonEx.Btoon.Types.element_type()} | :error
-  def detect_type([]), do: :error
+  @spec detect_type([number()], boolean()) ::
+          {:ok, ToonEx.Btoon.Types.element_type()} | :error
+  def detect_type(values, allow_uint64 \\ false)
 
-  def detect_type(values) when is_list(values) do
+  def detect_type([], _allow_uint64), do: :error
+
+  def detect_type(values, allow_uint64) when is_list(values) do
     # Single pass: check type and collect min/max for integers, or check float32 exactness
     case Enum.reduce_while(values, {:unknown, nil, nil}, fn
            v, {:unknown, _, _} when is_integer(v) ->
@@ -196,29 +204,47 @@ defmodule ToonEx.Btoon.ElementType do
            _, {:float, _} ->
              {:halt, :error}
          end) do
-      {:int, min, max} -> int_type_from_bounds(min, max)
+      {:int, min, max} -> int_type_from_bounds(min, max, allow_uint64)
       {:float, :float32} -> {:ok, :float32}
       {:float, :float64} -> {:ok, :float64}
       :error -> :error
     end
   end
 
-  defp int_type_from_bounds(min, max) do
+  # Narrowest lossless integer type. Signed is preferred when a signed and
+  # an unsigned type of the same width both fit. `:uint64` is only legal
+  # for ObjectTable columns (TypedArray buffers allow selectors 0x00..0x08).
+  defp int_type_from_bounds(min, max, allow_uint64) do
     cond do
-      min < @int64_min or max > @int64_max ->
+      min < @int64_min or max > @uint64_max ->
         :error
 
       min >= @int8_min and max <= @int8_max ->
         {:ok, :int8}
 
+      min >= 0 and max <= @uint8_max ->
+        {:ok, :uint8}
+
       min >= @int16_min and max <= @int16_max ->
         {:ok, :int16}
+
+      min >= 0 and max <= @uint16_max ->
+        {:ok, :uint16}
 
       min >= Constants.int32_min() and max <= Constants.int32_max() ->
         {:ok, :int32}
 
-      true ->
+      min >= 0 and max <= @uint32_max ->
+        {:ok, :uint32}
+
+      max <= @int64_max ->
         {:ok, :int64}
+
+      allow_uint64 ->
+        {:ok, :uint64}
+
+      true ->
+        :error
     end
   end
 
@@ -277,11 +303,37 @@ defmodule ToonEx.Btoon.ElementType do
 
   @doc """
   Decodes a raw buffer into a list of numbers.
+
+  Uses binary comprehensions: one linear pass with no per-element
+  sub-binary construction.
   """
   @spec buffer_to_list(ToonEx.Btoon.Types.element_type(), binary()) :: [number()]
-  def buffer_to_list(type, data) when is_binary(data) do
-    do_buffer_to_list(type, data, [])
-  end
+  def buffer_to_list(:int8, data) when is_binary(data), do: for(<<v::8-signed <- data>>, do: v)
+  def buffer_to_list(:uint8, data) when is_binary(data), do: for(<<v::8 <- data>>, do: v)
+
+  def buffer_to_list(:int16, data) when is_binary(data),
+    do: for(<<v::16-little-signed <- data>>, do: v)
+
+  def buffer_to_list(:uint16, data) when is_binary(data),
+    do: for(<<v::16-little <- data>>, do: v)
+
+  def buffer_to_list(:int32, data) when is_binary(data),
+    do: for(<<v::32-little-signed <- data>>, do: v)
+
+  def buffer_to_list(:uint32, data) when is_binary(data),
+    do: for(<<v::32-little <- data>>, do: v)
+
+  def buffer_to_list(:int64, data) when is_binary(data),
+    do: for(<<v::64-little-signed <- data>>, do: v)
+
+  def buffer_to_list(:uint64, data) when is_binary(data),
+    do: for(<<v::64-little <- data>>, do: v)
+
+  def buffer_to_list(:float32, data) when is_binary(data),
+    do: for(<<v::32-little-float <- data>>, do: v)
+
+  def buffer_to_list(:float64, data) when is_binary(data),
+    do: for(<<v::64-little-float <- data>>, do: v)
 
   @doc "Decodes the first element of a buffer, returning `{value, rest}`."
   @spec decode_raw(ToonEx.Btoon.Types.element_type(), binary()) :: {number(), binary()}
@@ -321,7 +373,7 @@ defmodule ToonEx.Btoon.ElementType do
   defp detect_columns([name | rest], rows) do
     column = Enum.map(rows, fn row -> Map.fetch!(row, name) end)
 
-    case detect_type(column) do
+    case detect_type(column, true) do
       :error ->
         :error
 
@@ -349,11 +401,4 @@ defmodule ToonEx.Btoon.ElementType do
   defp encode_numeric(:uint64, v), do: <<v::64-little>>
   defp encode_numeric(:float32, v), do: <<v::32-little-float>>
   defp encode_numeric(:float64, v), do: <<v::64-little-float>>
-
-  defp do_buffer_to_list(_type, <<>>, acc), do: :lists.reverse(acc)
-
-  defp do_buffer_to_list(type, data, acc) do
-    {value, rest} = decode_raw(type, data)
-    do_buffer_to_list(type, rest, [value | acc])
-  end
 end

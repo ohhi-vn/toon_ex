@@ -33,7 +33,8 @@ defmodule ToonEx.Btoon.Encode do
   alias ToonEx.Btoon
   alias ToonEx.Btoon.{Constants, ElementType, EncodeError, Schema}
   alias ToonEx.Btoon.Encode.Options
-  alias ToonEx.Btoon.SchemaCompiler
+
+  @schema_int_types [:int8, :uint8, :int16, :uint16, :int32, :uint32, :int64, :uint64]
 
   @compile {:inline,
             pad_to: 2,
@@ -49,8 +50,7 @@ defmodule ToonEx.Btoon.Encode do
             do_encode_pairs: 5,
             do_encode_columns: 6,
             do_encode_fields: 6,
-            encode_field: 4,
-            encode_fixed_int: 3}
+            encode_field: 4}
 
   # ── Public API ──────────────────────────────────────────────────────────────
 
@@ -143,44 +143,36 @@ defmodule ToonEx.Btoon.Encode do
     assemble(opts, ctx, body)
   end
 
-  # Compiled schemas take precedence: validate!/1 auto-compiles any :schema,
-  # so this clause must match before the generic %Schema{} (itself a map)
-  # clause below, or the specialized encoder could never run.
-  defp encode_body(data, %{compiled_schema: compiled}, ctx)
-       when is_map(compiled) and compiled != %{} and is_map(data) do
-    SchemaCompiler.encode_schema_body(compiled, data, ctx)
-  end
-
   defp encode_body(data, %{schema: nil}, ctx), do: encode_value(data, 0, ctx)
 
   defp encode_body(data, %{schema: schema}, ctx) when is_map(schema) do
     encode_schema_body(schema, data, ctx)
   end
 
-  defp encode_body(_data, %{schema: schema}, _ctx) do
-    raise EncodeError, message: "schema mode requires a map value", value: schema
+  defp encode_body(data, %{schema: schema}, _ctx) when not is_map(schema) do
+    raise EncodeError, message: "schema mode requires a map value", value: data
   end
 
   # ── Assembly ────────────────────────────────────────────────────────────
 
   defp assemble(opts, ctx, body) do
     table_entries = :lists.reverse(ctx.table_rev)
-    do_assemble(opts, table_entries, body) |> IO.iodata_to_binary()
+    do_assemble(opts, table_entries, ctx.table_bytes, body) |> IO.iodata_to_binary()
   end
 
   defp assemble_iodata(opts, ctx, body) do
     table_entries = :lists.reverse(ctx.table_rev)
-    do_assemble(opts, table_entries, body)
+    do_assemble(opts, table_entries, ctx.table_bytes, body)
   end
 
-  defp do_assemble(opts, table_entries, body) do
+  defp do_assemble(opts, table_entries, table_bytes, body) do
     {table_iodata, table_size} =
       if opts.no_string_table do
         {[], 0}
       else
         case table_entries do
           [] -> {[], 0}
-          _ -> {build_table(table_entries), 4 + table_bytes(table_entries)}
+          _ -> {build_table(table_entries), 4 + table_bytes}
         end
       end
 
@@ -219,11 +211,11 @@ defmodule ToonEx.Btoon.Encode do
     [<<length(entries)::32-little>> | Enum.map(entries, &[<<byte_size(&1)::32-little>>, &1])]
   end
 
-  defp table_bytes(entries), do: Enum.reduce(entries, 0, &(byte_size(&1) + 4 + &2))
-
   defp compute_flags(opts, table_entries) do
+    session_active? = opts.dictionary != nil and Btoon.Dictionary.size(opts.dictionary) > 0
+
     flags =
-      if opts.dictionary && Btoon.Dictionary.size(opts.dictionary) > 0 do
+      if session_active? do
         Constants.flag_session_dictionary()
       else
         0
@@ -233,10 +225,17 @@ defmodule ToonEx.Btoon.Encode do
       if opts.no_string_table do
         Bitwise.bor(flags, Constants.flag_no_string_table())
       else
-        if table_entries != [] do
-          Bitwise.bor(flags, Constants.flag_string_table())
-        else
-          flags
+        cond do
+          table_entries != [] ->
+            Bitwise.bor(flags, Constants.flag_string_table())
+
+          # §18: with a session dictionary active and no per-message table
+          # entries, set the no-table flag to eliminate table overhead.
+          session_active? ->
+            Bitwise.bor(flags, Constants.flag_no_string_table())
+
+          true ->
+            flags
         end
       end
 
@@ -267,6 +266,7 @@ defmodule ToonEx.Btoon.Encode do
               object_tables: true,
               table_ids: %{},
               table_rev: [],
+              table_bytes: 0,
               next_table_id: 0
   end
 
@@ -295,6 +295,7 @@ defmodule ToonEx.Btoon.Encode do
       ctx
       | table_ids: Map.put(ctx.table_ids, string, id),
         table_rev: [string | ctx.table_rev],
+        table_bytes: ctx.table_bytes + 4 + byte_size(string),
         next_table_id: id + 1
     }
   end
@@ -327,6 +328,10 @@ defmodule ToonEx.Btoon.Encode do
 
       Btoon.ObjectTable ->
         encode_object_table(value, offset, ctx)
+
+      Btoon.Extension ->
+        {iodata, size} = encode_extension(value)
+        {iodata, size, ctx}
 
       _other ->
         {encoded, size, ctx} =
@@ -370,8 +375,11 @@ defmodule ToonEx.Btoon.Encode do
       value >= -2_147_483_648 and value <= 2_147_483_647 ->
         {<<Constants.tag_int32(), value::32-little-signed>>, 5}
 
-      true ->
+      value >= -9_223_372_036_854_775_808 and value <= 9_223_372_036_854_775_807 ->
         {<<Constants.tag_int64(), value::64-little-signed>>, 9}
+
+      true ->
+        raise EncodeError, message: "integer out of Int64 range", value: value
     end
   end
 
@@ -391,6 +399,24 @@ defmodule ToonEx.Btoon.Encode do
   # per-message string table (when :auto). Both keys and string values use
   # this path, so a ref id identifies one entry in the combined dictionary
   # (session entries first, then per-message entries).
+
+  # Fast path: no session dictionary — only the per-message table (or an
+  # inline string) can apply, skipping the dictionary lookup entirely.
+  defp encode_string(string, %{session_size: 0} = ctx) do
+    case Map.fetch(ctx.table_ids, string) do
+      {:ok, id} ->
+        encode_string_ref_tuple(id, ctx)
+
+      :error when ctx.no_string_table or ctx.string_table == :off ->
+        {<<Constants.tag_string(), byte_size(string)::32-little, string::binary>>,
+         5 + byte_size(string), ctx}
+
+      :error ->
+        id = ctx.next_table_id
+        ctx = update_table(ctx, string, id)
+        encode_string_ref_tuple(id, ctx)
+    end
+  end
 
   defp encode_string(string, ctx) do
     case Map.fetch(ctx.dictionary, string) do
@@ -429,6 +455,16 @@ defmodule ToonEx.Btoon.Encode do
 
   defp encode_binary(data) do
     {<<Constants.tag_binary(), byte_size(data)::32-little, data::binary>>, 5 + byte_size(data)}
+  end
+
+  # §23: extension values are `Tag::1  PayloadLength::UInt32  Payload`, so
+  # any decoder can skip an unimplemented extension.
+  defp encode_extension(%Btoon.Extension{tag: tag, data: data}) do
+    if Btoon.Extension.extension_tag?(tag) do
+      {<<tag, byte_size(data)::32-little, data::binary>>, 5 + byte_size(data)}
+    else
+      raise EncodeError, message: "extension tag must be in 0xF0..0xFF", value: tag
+    end
   end
 
   # ── Arrays ──────────────────────────────────────────────────────────────────
@@ -548,6 +584,14 @@ defmodule ToonEx.Btoon.Encode do
   # ── Typed arrays ────────────────────────────────────────────────────────────
 
   defp encode_typed_array(%Btoon.TypedArray{type: type, data: data}, offset, ctx) do
+    # TypedArray buffers allow only numeric selectors 0x00..0x08 (§13);
+    # in particular :uint64 is not legal here.
+    unless ElementType.typed_array_type?(type) do
+      raise EncodeError,
+        message: "invalid typed array element type",
+        value: type
+    end
+
     elem_size = ElementType.element_size(type)
     count = div(byte_size(data), elem_size)
     # Buffer begins at offset + 7 (tag + element type + count + pad-length byte).
@@ -570,15 +614,18 @@ defmodule ToonEx.Btoon.Encode do
          offset,
          ctx
        ) do
-    # When session dictionary is active, column names MUST be StringRef (per spec §14)
-    # This means they must be present in the session dictionary.
-    if ctx.session_size > 0 do
+    # §14: with the session dictionary active, column names MUST be StringRef.
+    # A name present in neither the session dictionary nor the per-message
+    # table MUST be added to the per-message table — which `encode_string/2`
+    # does — so the only illegal case is when the per-message table is
+    # disabled (flag 0x10) and the name is not in the session dictionary.
+    if ctx.no_string_table and ctx.session_size > 0 do
       Enum.each(columns, fn column ->
         unless Map.has_key?(ctx.dictionary, column.name) do
           raise EncodeError,
             message:
-              "ObjectTable column name #{inspect(column.name)} not in session dictionary; " <>
-                "when session dictionary is active, all column names must be present in it",
+              "ObjectTable column name #{inspect(column.name)} is not in the session " <>
+                "dictionary and the per-message string table is disabled",
             value: column.name
         end
       end)
@@ -641,36 +688,75 @@ defmodule ToonEx.Btoon.Encode do
 
   defp do_encode_fields([], _map, _offset, ctx, acc, size), do: {acc, size, ctx}
 
-  defp do_encode_fields([%{name: name, type: type} | rest], map, offset, ctx, acc, size) do
-    case Map.fetch(map, name) do
-      :error ->
-        raise EncodeError, message: "missing value for schema field", value: name
+  defp do_encode_fields([field | rest], map, offset, ctx, acc, size) do
+    value = Map.fetch!(map, field.name)
+    {field_iodata, field_size, ctx} = encode_field(field.type, value, offset, ctx)
 
-      {:ok, value} ->
-        {field_iodata, field_size, ctx} = encode_field(type, value, offset, ctx)
-
-        do_encode_fields(
-          rest,
-          map,
-          offset + field_size,
-          ctx,
-          [field_iodata | acc],
-          size + field_size
-        )
-    end
+    do_encode_fields(
+      rest,
+      map,
+      offset + field_size,
+      ctx,
+      [field_iodata | acc],
+      size + field_size
+    )
   end
 
-  defp encode_field(type, value, _offset, ctx)
-       when type in [:int8, :uint8, :int16, :uint16, :int32, :uint32, :int64, :uint64] do
-    encode_fixed_int(type, value, ctx)
-  end
+  # Fixed-width numeric schema fields encode via one matched clause with
+  # range guards — no range lookup, no raw-encode dispatch (§15 hot path).
+  defp encode_field(:int8, value, _offset, ctx)
+       when is_integer(value) and value >= -128 and value <= 127,
+       do: {<<value::8-signed>>, 1, ctx}
 
-  defp encode_field(type, value, _offset, ctx) when type in [:float32, :float64] do
-    if is_float(value) do
-      {ElementType.encode_raw(type, value), ElementType.size(type), ctx}
+  defp encode_field(:uint8, value, _offset, ctx)
+       when is_integer(value) and value >= 0 and value <= 255,
+       do: {<<value::8>>, 1, ctx}
+
+  defp encode_field(:int16, value, _offset, ctx)
+       when is_integer(value) and value >= -32_768 and value <= 32_767,
+       do: {<<value::16-little-signed>>, 2, ctx}
+
+  defp encode_field(:uint16, value, _offset, ctx)
+       when is_integer(value) and value >= 0 and value <= 65_535,
+       do: {<<value::16-little>>, 2, ctx}
+
+  defp encode_field(:int32, value, _offset, ctx)
+       when is_integer(value) and value >= -2_147_483_648 and value <= 2_147_483_647,
+       do: {<<value::32-little-signed>>, 4, ctx}
+
+  defp encode_field(:uint32, value, _offset, ctx)
+       when is_integer(value) and value >= 0 and value <= 4_294_967_295,
+       do: {<<value::32-little>>, 4, ctx}
+
+  defp encode_field(:int64, value, _offset, ctx)
+       when is_integer(value) and value >= -9_223_372_036_854_775_808 and
+              value <= 9_223_372_036_854_775_807,
+       do: {<<value::64-little-signed>>, 8, ctx}
+
+  defp encode_field(:uint64, value, _offset, ctx)
+       when is_integer(value) and value >= 0 and value <= 18_446_744_073_709_551_615,
+       do: {<<value::64-little>>, 8, ctx}
+
+  defp encode_field(:float32, value, _offset, ctx) when is_float(value),
+    do: {<<value::32-little-float>>, 4, ctx}
+
+  defp encode_field(:float64, value, _offset, ctx) when is_float(value),
+    do: {<<value::64-little-float>>, 8, ctx}
+
+  defp encode_field(type, value, _offset, _ctx) when type in @schema_int_types do
+    if is_integer(value) do
+      raise EncodeError,
+        message: "value out of range for schema field #{inspect(type)}",
+        value: value
     else
-      raise EncodeError, message: "schema field #{inspect(type)} requires a float", value: value
+      raise EncodeError,
+        message: "schema field #{inspect(type)} requires an integer",
+        value: value
     end
+  end
+
+  defp encode_field(type, value, _offset, _ctx) when type in [:float32, :float64] do
+    raise EncodeError, message: "schema field #{inspect(type)} requires a float", value: value
   end
 
   defp encode_field(:null, nil, _offset, ctx), do: {<<>>, 0, ctx}
@@ -706,22 +792,6 @@ defmodule ToonEx.Btoon.Encode do
 
   defp encode_field(:array, value, offset, ctx), do: encode_value(value, offset, ctx)
   defp encode_field(:object, value, offset, ctx), do: encode_value(value, offset, ctx)
-
-  defp encode_fixed_int(type, value, ctx) when is_integer(value) do
-    {min, max} = ElementType.int_range(type)
-
-    if value >= min and value <= max do
-      {ElementType.encode_raw(type, value), ElementType.size(type), ctx}
-    else
-      raise EncodeError,
-        message: "value out of range for schema field #{inspect(type)}",
-        value: value
-    end
-  end
-
-  defp encode_fixed_int(type, value, _ctx) do
-    raise EncodeError, message: "schema field #{inspect(type)} requires an integer", value: value
-  end
 
   # ── Alignment helpers ───────────────────────────────────────────────────────
 

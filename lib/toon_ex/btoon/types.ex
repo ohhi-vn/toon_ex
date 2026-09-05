@@ -13,6 +13,7 @@ defmodule ToonEx.Btoon.Types do
       `0x0C`).
     * `Btoon.ObjectTable` – a columnar table of homogeneous numeric columns
       (tag `0x0D`).
+    * `Btoon.Extension` – a registered extension value (tags `0xF0`..`0xFF`).
 
   ## Element types
 
@@ -39,6 +40,7 @@ defmodule ToonEx.Btoon.Types do
           | Btoon.Binary.t()
           | Btoon.TypedArray.t()
           | Btoon.ObjectTable.t()
+          | Btoon.Extension.t()
           | [encodable()]
           | %{optional(String.t()) => encodable()}
 
@@ -272,4 +274,56 @@ defmodule ToonEx.Btoon.ObjectTable do
   @doc "Row count of the table."
   @spec row_count(t()) :: non_neg_integer()
   def row_count(%__MODULE__{row_count: row_count}), do: row_count
+end
+
+defmodule ToonEx.Btoon.Extension do
+  @moduledoc """
+  A registered extension value (tags `0xF0`..`0xFF`).
+
+  Extension types are the forward-compatible escape hatch of the BTOON wire
+  format: an extension value is encoded as its tag, a length prefix and the
+  raw payload, so any decoder can skip an unimplemented extension instead of
+  failing. The payload's internal layout is defined by the extension's
+  registration.
+
+  Tag ranges:
+
+    * `0xF0`–`0xF7` — experimental / vendor-specific
+    * `0xF8`–`0xFB` — official (registered with the maintainers)
+    * `0xFC`–`0xFF` — private / application-local
+
+  ## Examples
+
+      iex> ext = Btoon.Extension.new(0xF0, <<1, 2, 3>>)
+      iex> Btoon.decode!(Btoon.encode!(ext))
+      %Btoon.Extension{tag: 240, data: <<1, 2, 3>>}
+  """
+
+  @ext_min 0xF0
+  @ext_max 0xFF
+
+  defstruct [:tag, :data]
+
+  @type tag :: 0xF0..0xFF
+  @type t :: %__MODULE__{tag: tag(), data: binary()}
+
+  @doc "Wraps a payload under an extension tag in `0xF0..0xFF`."
+  @spec new(tag(), binary()) :: t()
+  def new(tag, data) when tag in @ext_min..@ext_max and is_binary(data) do
+    %__MODULE__{tag: tag, data: data}
+  end
+
+  def new(tag, _data) do
+    raise ArgumentError,
+          "extension tag must be in 0xF0..0xFF, got: #{inspect(tag)}"
+  end
+
+  @doc "The payload bytes."
+  @spec data(t()) :: binary()
+  def data(%__MODULE__{data: data}), do: data
+
+  @doc "Whether the byte is an extension tag."
+  @spec extension_tag?(byte()) :: boolean()
+  def extension_tag?(byte) when byte in @ext_min..@ext_max, do: true
+  def extension_tag?(_), do: false
 end
